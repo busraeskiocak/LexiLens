@@ -56,7 +56,7 @@ export default function AppLayout() {
       {showFixedBack ? (
         <FixedBackButton onClick={handleFixedBack} aria-label="Geri" />
       ) : null}
-      <div className="pointer-events-none fixed right-0 top-0 z-50 flex justify-end p-3 sm:p-4">
+      <div className="pointer-events-none fixed right-0 top-0 z-[100] flex justify-end p-3 sm:p-4">
         <button
           type="button"
           onClick={handleProfileIconClick}

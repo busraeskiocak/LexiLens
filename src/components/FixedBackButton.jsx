@@ -24,7 +24,7 @@ function ChevronLeftIcon({ className }) {
  */
 export default function FixedBackButton({ onClick, "aria-label": ariaLabel = "Geri" }) {
   return (
-    <div className="pointer-events-none fixed left-0 top-0 z-50 p-3 sm:p-4">
+    <div className="pointer-events-none fixed left-0 top-0 z-[100] p-3 sm:p-4">
       <button
         type="button"
         onClick={onClick}

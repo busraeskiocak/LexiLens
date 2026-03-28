@@ -19,13 +19,24 @@ body {
   @apply min-h-screen;
 }
 
-/* Word benzeri contenteditable: paragraflar */
+/* Word benzeri contenteditable: paragraflar (--lexi-para-gap editör inline style ile) */
 .word-editor-surface p {
-  margin: 0.2em 0;
+  margin: 0;
+  margin-bottom: var(--lexi-para-gap, 4px);
   min-height: 1.35em;
+}
+.word-editor-surface p:last-child {
+  margin-bottom: 0;
 }
 .word-editor-surface p:first-child {
   margin-top: 0;
+}
+
+/* Hunspell Türkçe: yalnızca sözlükte olmayan kelimeler (tarayıcı spellcheck kapalı) */
+.word-editor-surface .lexi-spell-unknown {
+  text-decoration: underline wavy #dc2626;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
 }
 
 /* Karşılama: sade giriş animasyonu (Görev 2) */

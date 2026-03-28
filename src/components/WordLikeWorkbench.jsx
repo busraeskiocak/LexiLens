@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { FONT_OPTIONS } from "../lib/upp.js";
 import {
   isProbablyHtml,
   plainTextToColorizedHtml,
@@ -9,12 +8,85 @@ import {
 import {
   updateReadingHistoryEntry,
 } from "../utils/readingHistory.js";
+import {
+  applyTurkishSpellMarks,
+  getCaretTextOffset,
+  loadTurkishSpell,
+  setCaretTextOffset,
+  unwrapTurkishSpellMarks,
+} from "../lib/turkishSpell.js";
 
-const FONT_SIZES = [12, 14, 16, 18, 20];
 const WRITING_STORAGE_KEY = "lexilens_writing_document";
+
+const FONT_SIZE_OPTIONS = [12, 14, 16, 18, 20, 24, 28, 32];
+
+/** Araç çubuğu fontları (UPP id’leri ile uyumlu: opendyslexic, arial, comic-sans) */
+const WORKBENCH_FONT_OPTIONS = [
+  {
+    id: "opendyslexic",
+    label: "OpenDyslexic",
+    fontFamily: '"OpenDyslexic", "Segoe UI", sans-serif',
+  },
+  {
+    id: "arial",
+    label: "Arial",
+    fontFamily: 'Arial, Helvetica, "Segoe UI", sans-serif',
+  },
+  {
+    id: "comic-sans",
+    label: "Comic Sans",
+    fontFamily: '"Comic Sans MS", "Comic Sans", "Segoe UI", cursive',
+  },
+  {
+    id: "times-new-roman",
+    label: "Times New Roman",
+    fontFamily: '"Times New Roman", Times, "Liberation Serif", serif',
+  },
+  {
+    id: "verdana",
+    label: "Verdana",
+    fontFamily: 'Verdana, Geneva, "Segoe UI", sans-serif',
+  },
+];
+
+function IconAlignLeft({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M4 5h16v2H4V5zm0 4h10v2H4V9zm0 4h16v2H4v-2zm0 4h10v2H4v-2z" />
+    </svg>
+  );
+}
+
+function IconAlignCenter({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M4 5h16v2H4V5zm3 4h10v2H7V9zm-3 4h16v2H4v-2zm3 4h10v2H7v-2z" />
+    </svg>
+  );
+}
+
+function IconAlignRight({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M4 5h16v2H4V5zm6 4h10v2H10V9zm-6 4h16v2H4v-2zm6 4h10v2H10v-2z" />
+    </svg>
+  );
+}
+
+function IconAlignJustify({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M4 5h16v2H4V5zm0 4h16v2H4V9zm0 4h16v2H4v-2zm0 4h16v2H4v-2z" />
+    </svg>
+  );
+}
 
 /** ~A4 iç yüksekliği (px, 96dpi) — sayfa sayımı için */
 const PAGE_SLICE_PX = 1008;
+/** Çok sayfalı belgelerde sayfalar arası boşluk (px); kenar boşluğu sonrası içerik PAGE_SLICE ile hizalı */
+const PAGE_VISUAL_GAP_PX = 8;
+/** Sayfa sonu ile gri boşluk arası: kesilen satırları beyazla örter (px) */
+const PAGE_BREAK_MARGIN_PX = 22;
 
 const A4_MM_W = 210;
 const A4_MM_H = 297;
@@ -23,11 +95,95 @@ function mm(n) {
   return `${n}mm`;
 }
 
+/** Metni sayfa aralığında gizler; sonsuz tekrar yok (son sayfada hayalet çizgi olmaz). */
+function editorPageMaskImage(pageCount) {
+  if (pageCount <= 1) return undefined;
+  const L = PAGE_SLICE_PX;
+  const G = PAGE_VISUAL_GAP_PX;
+  const stops = ["#000 0px"];
+  for (let p = 1; p < pageCount; p++) {
+    const gapStart = p * L - G;
+    const gapEnd = p * L;
+    stops.push(
+      `#000 ${gapStart}px`,
+      `transparent ${gapStart}px`,
+      `transparent ${gapEnd}px`,
+      `#000 ${gapEnd}px`
+    );
+  }
+  stops.push("#000 100%");
+  return `linear-gradient(to bottom, ${stops.join(", ")})`;
+}
+
 /**
+ * Düğmelerde odak kaybını önlemek için; select/option üzerinde çağrılmamalı —
+ * preventDefault açılır listeyi ve seçimi bozar.
  * @param {import('react').MouseEvent} e
  */
 function keepEditorSelection(e) {
+  const t = e.target;
+  if (t instanceof Element) {
+    if (t.closest("select")) return;
+  }
   e.preventDefault();
+}
+
+function UndoIcon({ className }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      strokeWidth={2}
+      stroke="currentColor"
+      className={className}
+      aria-hidden
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"
+      />
+    </svg>
+  );
+}
+
+function IconBookOpen({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      aria-hidden
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 3-2.292A8.967 8.967 0 0 1 18 3.75v14.25A8.987 8.987 0 0 0 18 18c-2.305 0-4.408.867-6 2.292"
+      />
+    </svg>
+  );
+}
+
+function IconArrowLeft({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      aria-hidden
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"
+      />
+    </svg>
+  );
 }
 
 /** DOM: el.contains(el) false döner; seçim kökü editörün kendisi olabiliyor. */
@@ -106,11 +262,8 @@ export default function WordLikeWorkbench({
   const scrollAreaRef = useRef(null);
   /** Araç çubuğuna tıklanınca kaybolan seçimi geri yüklemek için */
   const savedRangeRef = useRef(null);
-  const [title, setTitle] = useState(initialTitle);
-  const [fontSizePx, setFontSizePx] = useState(16);
-  const [fontId, setFontId] = useState(
-    () => upp?.fontPreference ?? "opendyslexic"
-  );
+  const spellRef = useRef(null);
+  const spellDebounceRef = useRef(0);
   const [wordCount, setWordCount] = useState(0);
   const [charCount, setCharCount] = useState(0);
   const [pageCount, setPageCount] = useState(1);
@@ -120,19 +273,60 @@ export default function WordLikeWorkbench({
   const [fmtItalic, setFmtItalic] = useState(false);
   const [fmtUnderline, setFmtUnderline] = useState(false);
 
+  const [toolbarFontId, setToolbarFontId] = useState("opendyslexic");
+  const [fontSizePx, setFontSizePx] = useState(16);
+  const [letterSpacingPx, setLetterSpacingPx] = useState(0);
+  const [paragraphGapPx, setParagraphGapPx] = useState(6);
+  const [textAlign, setTextAlign] = useState(
+    /** @type {"left" | "center" | "right" | "justify"} */ ("left")
+  );
+  const [immersiveReading, setImmersiveReading] = useState(false);
+
+  const uppBackgroundColor =
+    upp?.background && typeof upp.background.color === "string"
+      ? upp.background.color
+      : "#FFF8E7";
+
   const applyUppTypography = useCallback(() => {
     const el = editorRef.current;
     if (!el || !upp) return;
     const typo = upp.typography ?? {};
-    const pref = upp.fontPreference ?? "opendyslexic";
-    const opt = FONT_OPTIONS.find((f) => f.id === pref) ?? FONT_OPTIONS[0];
-    el.style.fontFamily = opt.fontFamily;
-    el.style.letterSpacing = `${typeof typo.letterSpacingEm === "number" ? typo.letterSpacingEm : 0.06}em`;
     el.style.lineHeight = String(
       typeof typo.lineHeight === "number" ? typo.lineHeight : 1.65
     );
-    setFontId(pref);
   }, [upp]);
+
+  useEffect(() => {
+    if (!upp) return;
+    const pref = upp.fontPreference ?? "opendyslexic";
+    const known = WORKBENCH_FONT_OPTIONS.some((f) => f.id === pref);
+    setToolbarFontId(known ? pref : "opendyslexic");
+    const em = upp.typography?.letterSpacingEm;
+    const px =
+      typeof em === "number"
+        ? Math.min(10, Math.max(0, Math.round(em * 16)))
+        : 0;
+    setLetterSpacingPx(px);
+  }, [upp]);
+
+  const applyToolbarDocumentStyles = useCallback(() => {
+    const el = editorRef.current;
+    if (!el) return;
+    const font =
+      WORKBENCH_FONT_OPTIONS.find((f) => f.id === toolbarFontId) ??
+      WORKBENCH_FONT_OPTIONS[0];
+    el.style.fontSize = `${fontSizePx}px`;
+    el.style.fontFamily = font.fontFamily;
+    el.style.letterSpacing = `${letterSpacingPx}px`;
+    el.style.textAlign = textAlign;
+    el.style.setProperty("--lexi-para-gap", `${paragraphGapPx}px`);
+  }, [
+    toolbarFontId,
+    fontSizePx,
+    letterSpacingPx,
+    textAlign,
+    paragraphGapPx,
+  ]);
 
   const syncStats = useCallback(() => {
     const el = editorRef.current;
@@ -148,6 +342,75 @@ export default function WordLikeWorkbench({
     const pages = Math.min(500, Math.max(1, rawPages));
     setPageCount(pages);
   }, []);
+
+  const runTurkishSpell = useCallback(() => {
+    const ed = editorRef.current;
+    const sp = spellRef.current;
+    if (!ed || !sp) return;
+    try {
+      const pos = getCaretTextOffset(ed);
+      applyTurkishSpellMarks(ed, sp);
+      if (pos !== null) {
+        ed.focus({ preventScroll: true });
+        setCaretTextOffset(ed, pos);
+      }
+    } catch {
+      /* DOM / sözlük */
+    }
+    syncStats();
+  }, [syncStats]);
+
+  const scheduleTurkishSpell = useCallback(() => {
+    window.clearTimeout(spellDebounceRef.current);
+    spellDebounceRef.current = window.setTimeout(runTurkishSpell, 400);
+  }, [runTurkishSpell]);
+
+  useEffect(() => {
+    if (immersiveReading) return;
+    applyToolbarDocumentStyles();
+    syncStats();
+    scheduleTurkishSpell();
+  }, [
+    immersiveReading,
+    applyToolbarDocumentStyles,
+    syncStats,
+    scheduleTurkishSpell,
+  ]);
+
+  useEffect(() => {
+    const el = editorRef.current;
+    if (!el || !upp) return;
+    if (!immersiveReading) {
+      applyToolbarDocumentStyles();
+      queueMicrotask(() => runTurkishSpell());
+      return;
+    }
+    unwrapTurkishSpellMarks(el);
+    const typo = upp.typography ?? {};
+    const pref = upp.fontPreference ?? "opendyslexic";
+    const fontOpt =
+      WORKBENCH_FONT_OPTIONS.find((f) => f.id === pref) ??
+      WORKBENCH_FONT_OPTIONS[0];
+    el.style.fontFamily = fontOpt.fontFamily;
+    el.style.fontSize = "clamp(1.125rem, 2.75vw, 1.875rem)";
+    el.style.letterSpacing = `${typeof typo.letterSpacingEm === "number" ? typo.letterSpacingEm : 0.06}em`;
+    el.style.lineHeight = String(
+      typeof typo.lineHeight === "number" ? typo.lineHeight : 1.65
+    );
+    el.style.textAlign = "left";
+    el.style.setProperty(
+      "--lexi-para-gap",
+      `${Math.min(28, Math.round(10 + (typo.lineHeight ?? 1.65) * 10))}px`
+    );
+    el.style.color = "#1c1917";
+    syncStats();
+  }, [
+    immersiveReading,
+    upp,
+    applyToolbarDocumentStyles,
+    runTurkishSpell,
+    syncStats,
+  ]);
 
   const refreshFormatState = useCallback(() => {
     const ed = editorRef.current;
@@ -218,10 +481,6 @@ export default function WordLikeWorkbench({
   }, []);
 
   useEffect(() => {
-    setTitle(initialTitle);
-  }, [initialTitle]);
-
-  useEffect(() => {
     const el = editorRef.current;
     if (!el) return;
     if (colorizePlainOnLoad && mode === "reading") {
@@ -235,8 +494,28 @@ export default function WordLikeWorkbench({
     }
     applyUppTypography();
     syncStats();
+    queueMicrotask(() => runTurkishSpell());
     // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnızca belge gövdesi
-  }, [initialBody, colorizePlainOnLoad, mode]);
+  }, [initialBody, colorizePlainOnLoad, mode, runTurkishSpell]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadTurkishSpell()
+      .then((s) => {
+        if (cancelled) return;
+        spellRef.current = s;
+        runTurkishSpell();
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [runTurkishSpell]);
+
+  useEffect(
+    () => () => window.clearTimeout(spellDebounceRef.current),
+    []
+  );
 
   useEffect(() => {
     const onSel = () => {
@@ -256,62 +535,34 @@ export default function WordLikeWorkbench({
     }
     refreshFormatState();
     syncStats();
-  }, [refreshFormatState, syncStats]);
+    scheduleTurkishSpell();
+  }, [refreshFormatState, syncStats, scheduleTurkishSpell]);
 
-  const applyFontFamily = useCallback(
-    (id) => {
-      const opt = FONT_OPTIONS.find((f) => f.id === id);
-      if (!opt) return;
-      setFontId(id);
-      window.setTimeout(() => {
-        restoreEditorSelection();
-        window.requestAnimationFrame(() => {
-          applyInlineStyleInEditor(editorRef.current, {
-            fontFamily: opt.fontFamily,
-          });
-          rememberSelectionInEditor();
-          syncStats();
-        });
-      }, 0);
-    },
-    [restoreEditorSelection, rememberSelectionInEditor, syncStats]
-  );
-
-  const applyFontSize = useCallback(
-    (px) => {
-      setFontSizePx(px);
-      window.setTimeout(() => {
-        restoreEditorSelection();
-        window.requestAnimationFrame(() => {
-          applyInlineStyleInEditor(editorRef.current, {
-            fontSize: `${px}px`,
-          });
-          rememberSelectionInEditor();
-          syncStats();
-        });
-      }, 0);
-    },
-    [restoreEditorSelection, rememberSelectionInEditor, syncStats]
-  );
-
-  const applyUppColorize = useCallback(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    const plain = el.innerText || "";
-    el.innerHTML = plainTextToColorizedHtml(plain);
-    applyUppTypography();
+  const handleUndo = useCallback(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    ed.focus();
+    try {
+      document.execCommand("undo", false);
+    } catch {
+      /* ignore */
+    }
+    rememberSelectionInEditor();
+    refreshFormatState();
     syncStats();
-  }, [applyUppTypography, syncStats]);
+    scheduleTurkishSpell();
+  }, [rememberSelectionInEditor, refreshFormatState, syncStats, scheduleTurkishSpell]);
 
   const handleSave = useCallback(() => {
     const el = editorRef.current;
     if (!el) return;
+    if (!stripHtmlToPlainText(el.innerHTML).trim()) return;
+    unwrapTurkishSpellMarks(el);
     const html = el.innerHTML;
-    if (!stripHtmlToPlainText(html).trim()) return;
 
     if (mode === "reading" && documentId) {
       const ok = updateReadingHistoryEntry(documentId, {
-        title: title.trim() || "Adsız belge",
+        title: initialTitle.trim() || "Adsız belge",
         content: html,
       });
       if (ok) {
@@ -324,7 +575,7 @@ export default function WordLikeWorkbench({
         localStorage.setItem(
           WRITING_STORAGE_KEY,
           JSON.stringify({
-            title: title.trim() || "Adsız belge",
+            title: initialTitle.trim() || "Adsız belge",
             html,
             savedAt: new Date().toISOString(),
           })
@@ -335,7 +586,8 @@ export default function WordLikeWorkbench({
         /* quota */
       }
     }
-  }, [mode, documentId, title, onReadingSaved]);
+    queueMicrotask(() => runTurkishSpell());
+  }, [mode, documentId, initialTitle, onReadingSaved, runTurkishSpell]);
 
   const updateCurrentPageFromScroll = useCallback(() => {
     const sc = scrollAreaRef.current;
@@ -360,11 +612,35 @@ export default function WordLikeWorkbench({
   }, [syncStats, updateCurrentPageFromScroll]);
 
   const pageNumbers = Array.from({ length: pageCount }, (_, i) => i + 1);
+  const editorMask = immersiveReading
+    ? undefined
+    : editorPageMaskImage(pageCount);
 
   return (
-    <div className="flex min-h-[calc(100dvh-3.5rem)] flex-col bg-stone-400">
+    <div
+      className={
+        immersiveReading
+          ? "fixed inset-0 z-[120] flex min-h-0 flex-col"
+          : "flex min-h-[calc(100dvh-3.5rem)] flex-col bg-stone-400"
+      }
+      style={
+        immersiveReading ? { backgroundColor: uppBackgroundColor } : undefined
+      }
+    >
+      {immersiveReading ? (
+        <button
+          type="button"
+          className="fixed left-3 top-3 z-[130] flex size-11 items-center justify-center rounded-full border border-stone-400/90 bg-white/95 text-stone-800 shadow-md backdrop-blur-sm transition hover:bg-white"
+          onClick={() => setImmersiveReading(false)}
+          aria-label="Okuma modundan çık"
+        >
+          <IconArrowLeft className="size-6" />
+        </button>
+      ) : null}
+
+      {!immersiveReading ? (
       <header
-        className="fixed left-0 right-0 top-14 z-40 flex h-12 items-center gap-2 overflow-x-auto overflow-y-hidden border-b border-stone-400 bg-stone-300 px-2 shadow-sm sm:gap-3 sm:px-3"
+        className="fixed left-0 right-0 top-14 z-[60] flex w-full flex-wrap content-center items-center gap-x-2 gap-y-2 border-b border-stone-400 bg-stone-300 py-2 pl-[3.75rem] pr-[3.75rem] shadow-sm sm:gap-x-3 sm:pl-16 sm:pr-16"
         onPointerDownCapture={rememberSelectionInEditor}
       >
         <div className="flex shrink-0 flex-wrap items-center gap-1">
@@ -377,6 +653,16 @@ export default function WordLikeWorkbench({
             className="rounded-lg border border-stone-400 bg-white px-2 py-1.5 text-sm hover:bg-stone-50"
           >
             💾
+          </button>
+          <button
+            type="button"
+            title="Son değişikliği geri al (Ctrl+Z)"
+            aria-label="Geri al"
+            onMouseDown={keepEditorSelection}
+            onClick={handleUndo}
+            className="rounded-lg border border-stone-400 bg-white px-2 py-1.5 text-stone-700 hover:bg-stone-50"
+          >
+            <UndoIcon className="size-5" />
           </button>
           <button
             type="button"
@@ -422,13 +708,52 @@ export default function WordLikeWorkbench({
           </button>
         </div>
 
-        <select
-          aria-label="Yazı boyutu"
-          value={fontSizePx}
-          onChange={(e) => applyFontSize(Number(e.target.value))}
-          className="max-w-[4.5rem] rounded-lg border border-stone-400 bg-white px-1 py-1.5 text-sm"
+        <div
+          className="flex shrink-0 items-center gap-0.5 rounded-lg border border-stone-400 bg-white p-0.5"
+          role="group"
+          aria-label="Metin hizalama"
         >
-          {FONT_SIZES.map((s) => (
+          {(
+            [
+              ["left", "Sola hizala", IconAlignLeft],
+              ["center", "Ortala", IconAlignCenter],
+              ["right", "Sağa hizala", IconAlignRight],
+              ["justify", "İki yana yasla", IconAlignJustify],
+            ]
+          ).map(([align, label, Icon]) => (
+            <button
+              key={align}
+              type="button"
+              title={label}
+              aria-label={label}
+              aria-pressed={textAlign === align}
+              onMouseDown={keepEditorSelection}
+              onClick={() =>
+                setTextAlign(
+                  /** @type {"left" | "center" | "right" | "justify"} */ (
+                    align
+                  )
+                )
+              }
+              className={`rounded p-1.5 text-stone-800 ${
+                textAlign === align
+                  ? "bg-emerald-100 text-emerald-900 ring-1 ring-emerald-600"
+                  : "hover:bg-stone-100"
+              }`}
+            >
+              <Icon className="size-5" />
+            </button>
+          ))}
+        </div>
+
+        <select
+          aria-label="Punto (px)"
+          value={fontSizePx}
+          onMouseDown={keepEditorSelection}
+          onChange={(e) => setFontSizePx(Number(e.target.value))}
+          className="max-w-[5.5rem] shrink-0 rounded-lg border border-stone-400 bg-white px-1.5 py-1.5 text-sm"
+        >
+          {FONT_SIZE_OPTIONS.map((s) => (
             <option key={s} value={s}>
               {s}px
             </option>
@@ -437,78 +762,73 @@ export default function WordLikeWorkbench({
 
         <select
           aria-label="Yazı tipi"
-          value={fontId}
-          onChange={(e) => applyFontFamily(e.target.value)}
-          className="max-w-[9rem] rounded-lg border border-stone-400 bg-white px-1 py-1.5 text-sm sm:max-w-[11rem]"
+          value={toolbarFontId}
+          onMouseDown={keepEditorSelection}
+          onChange={(e) => setToolbarFontId(e.target.value)}
+          className="max-w-[10rem] shrink-0 rounded-lg border border-stone-400 bg-white px-1.5 py-1.5 text-xs sm:max-w-[12rem] sm:text-sm"
         >
-          {FONT_OPTIONS.map((f) => (
+          {WORKBENCH_FONT_OPTIONS.map((f) => (
             <option key={f.id} value={f.id}>
               {f.label}
             </option>
           ))}
         </select>
 
-        <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-stone-400 bg-white p-0.5">
-          <button
-            type="button"
-            title="Sola hizala"
-            aria-label="Sola hizala"
-            onMouseDown={keepEditorSelection}
-            onClick={() => exec("justifyLeft")}
-            className="rounded px-2 py-1 text-xs hover:bg-stone-100"
-          >
-            Sol
-          </button>
-          <button
-            type="button"
-            title="Ortala"
-            aria-label="Ortala"
-            onMouseDown={keepEditorSelection}
-            onClick={() => exec("justifyCenter")}
-            className="rounded px-2 py-1 text-xs hover:bg-stone-100"
-          >
-            Orta
-          </button>
-          <button
-            type="button"
-            title="Sağa hizala"
-            aria-label="Sağa hizala"
-            onMouseDown={keepEditorSelection}
-            onClick={() => exec("justifyRight")}
-            className="rounded px-2 py-1 text-xs hover:bg-stone-100"
-          >
-            Sağ
-          </button>
-        </div>
+        <label className="flex min-w-[min(100%,220px)] max-w-full shrink-0 flex-wrap items-center gap-2 sm:flex-nowrap">
+          <span className="w-full text-[11px] font-medium text-stone-700 sm:w-auto sm:shrink-0 sm:text-xs">
+            Harf aralığı
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={10}
+            step={1}
+            value={letterSpacingPx}
+            onChange={(e) => setLetterSpacingPx(Number(e.target.value))}
+            className="h-2 min-w-[72px] flex-1 accent-emerald-700 sm:max-w-[120px]"
+            aria-valuemin={0}
+            aria-valuemax={10}
+            aria-valuenow={letterSpacingPx}
+          />
+          <span className="w-9 shrink-0 text-right text-xs tabular-nums text-stone-800">
+            {letterSpacingPx}px
+          </span>
+        </label>
+
+        <label className="flex min-w-[min(100%,240px)] max-w-full shrink-0 flex-wrap items-center gap-2 sm:flex-nowrap">
+          <span className="w-full text-[11px] font-medium text-stone-700 sm:w-auto sm:shrink-0 sm:text-xs">
+            Paragraflar arası
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={40}
+            step={1}
+            value={paragraphGapPx}
+            onChange={(e) => setParagraphGapPx(Number(e.target.value))}
+            className="h-2 min-w-[72px] flex-1 accent-emerald-700 sm:max-w-[120px]"
+            aria-valuemin={0}
+            aria-valuemax={40}
+            aria-valuenow={paragraphGapPx}
+          />
+          <span className="w-9 shrink-0 text-right text-xs tabular-nums text-stone-800">
+            {paragraphGapPx}px
+          </span>
+        </label>
 
         <button
           type="button"
-          title="UPP yazı tipi, aralık ve harf renklerini uygula"
-          aria-label="UPP ayarlarını uygula"
+          title="Okuma modu — tam ekran, salt okunur"
+          aria-label="Okuma modunu aç"
           onMouseDown={keepEditorSelection}
-          onClick={applyUppColorize}
-          className="shrink-0 rounded-lg border border-stone-400 bg-white px-2 py-1.5 text-sm hover:bg-stone-50"
+          onClick={() => setImmersiveReading(true)}
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-emerald-600/70 bg-white px-2 py-1.5 text-stone-800 hover:bg-emerald-50"
         >
-          🎨
+          <IconBookOpen className="size-5 shrink-0 text-emerald-800" />
+          <span className="hidden text-xs font-semibold text-emerald-900 sm:inline">
+            Okuma modu
+          </span>
         </button>
-
-        <div className="min-w-[6rem] max-w-[14rem] flex-1 px-1 text-center sm:max-w-md">
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full rounded border border-stone-400 bg-white px-2 py-1 text-center text-sm font-medium text-stone-900"
-            placeholder="Belge adı"
-            aria-label="Belge adı"
-          />
-        </div>
-
-        <Link
-          to="/profil"
-          className="shrink-0 text-xs font-medium text-emerald-900 underline decoration-1 underline-offset-2 sm:text-sm"
-        >
-          Profil
-        </Link>
 
         {saveFlash ? (
           <span className="shrink-0 text-xs font-medium text-emerald-800">
@@ -516,70 +836,149 @@ export default function WordLikeWorkbench({
           </span>
         ) : null}
       </header>
+      ) : null}
 
       <div
         ref={scrollAreaRef}
-        className="flex flex-1 overflow-y-auto pt-12 pb-10"
+        className={
+          immersiveReading
+            ? "flex min-h-0 flex-1 overflow-y-auto px-5 pb-10 pt-16 sm:px-12 sm:pt-20 md:px-20 md:py-12 lg:px-28 lg:py-16"
+            : "flex flex-1 overflow-y-auto pt-40 pb-10 sm:pt-36"
+        }
         onScroll={updateCurrentPageFromScroll}
       >
-        <div className="mx-auto flex min-h-full w-full max-w-[calc(210mm+4rem)] justify-center gap-1 px-2 py-6 sm:gap-3 sm:px-6">
-          <aside
-            className="flex w-7 shrink-0 flex-col items-end pt-2 text-xs font-medium text-stone-700 sm:w-9"
-            aria-label="Sayfa numaraları"
-          >
-            {pageNumbers.map((n) => (
-              <div
-                key={n}
-                className="flex w-full items-start justify-end border-r border-transparent pr-1"
-                style={{ minHeight: PAGE_SLICE_PX, paddingTop: 6 }}
-              >
-                <span className="tabular-nums">{n}</span>
-              </div>
-            ))}
-          </aside>
+        <div
+          className={
+            immersiveReading
+              ? "mx-auto flex min-h-full w-full max-w-3xl flex-1 flex-col justify-start lg:max-w-4xl"
+              : "mx-auto flex min-h-full w-full max-w-[calc(210mm+4rem)] justify-center gap-1 px-2 py-6 sm:gap-3 sm:px-6"
+          }
+        >
+          {!immersiveReading ? (
+            <aside
+              className="flex w-7 shrink-0 flex-col items-end pt-2 text-xs font-medium text-stone-700 sm:w-9"
+              aria-label="Sayfa numaraları"
+            >
+              {pageNumbers.map((n) => (
+                <div
+                  key={n}
+                  className="flex w-full items-start justify-end border-r border-transparent pr-1"
+                  style={{ minHeight: PAGE_SLICE_PX, paddingTop: 6 }}
+                >
+                  <span className="tabular-nums">{n}</span>
+                </div>
+              ))}
+            </aside>
+          ) : null}
 
           <div
-            className="relative shrink-0 bg-white shadow-[0_4px_24px_rgba(0,0,0,0.18)]"
-            style={{
-              width: mm(A4_MM_W),
-              minHeight: mm(A4_MM_H),
-              maxWidth: "100%",
-              boxSizing: "border-box",
-              padding: `${mm(25)} ${mm(25)} ${mm(20)} ${mm(30)}`,
-            }}
+            className={
+              immersiveReading
+                ? "relative w-full shrink-0 bg-transparent shadow-none"
+                : "relative shrink-0 bg-white shadow-[0_4px_24px_rgba(0,0,0,0.18)]"
+            }
+            style={
+              immersiveReading
+                ? {
+                    boxSizing: "border-box",
+                    minHeight: "min-content",
+                    padding: "0.5rem 0",
+                  }
+                : {
+                    width: mm(A4_MM_W),
+                    minHeight: mm(A4_MM_H),
+                    maxWidth: "100%",
+                    boxSizing: "border-box",
+                    padding: `${mm(25)} ${mm(25)} ${mm(20)} ${mm(30)}`,
+                  }
+            }
           >
+            {!immersiveReading && pageCount > 1
+              ? Array.from({ length: pageCount - 1 }, (_, i) => (
+                  <div
+                    key={`page-gap-${i}`}
+                    aria-hidden
+                    className="pointer-events-none absolute right-0 left-0 z-[1] bg-stone-400"
+                    style={{
+                      top: `calc(${mm(25)} + ${(i + 1) * PAGE_SLICE_PX - PAGE_VISUAL_GAP_PX}px)`,
+                      height: PAGE_VISUAL_GAP_PX,
+                    }}
+                  />
+                ))
+              : null}
             <div
               ref={editorRef}
-              contentEditable
+              contentEditable={!immersiveReading}
               suppressContentEditableWarning
-              role="textbox"
-              aria-multiline
-              aria-label="Belge metni"
-              onInput={() => {
-                syncStats();
-                refreshFormatState();
+              role={immersiveReading ? "document" : "textbox"}
+              aria-multiline={!immersiveReading}
+              aria-readonly={immersiveReading}
+              aria-label={
+                immersiveReading ? "Okuma metni (salt okunur)" : "Belge metni"
+              }
+              lang="tr"
+              spellCheck={false}
+              onInput={
+                immersiveReading
+                  ? undefined
+                  : () => {
+                      syncStats();
+                      refreshFormatState();
+                      scheduleTurkishSpell();
+                    }
+              }
+              className={`word-editor-surface relative z-[2] w-full max-w-full bg-transparent text-stone-900 outline-none ${
+                immersiveReading
+                  ? "min-h-[50vh] select-text"
+                  : "min-h-[calc(297mm-45mm)]"
+              }`}
+              style={{
+                color: "#1c1917",
+                ...(editorMask
+                  ? {
+                      WebkitMaskImage: editorMask,
+                      WebkitMaskRepeat: "no-repeat",
+                      WebkitMaskSize: `100% ${pageCount * PAGE_SLICE_PX}px`,
+                      maskImage: editorMask,
+                      maskRepeat: "no-repeat",
+                      maskSize: `100% ${pageCount * PAGE_SLICE_PX}px`,
+                    }
+                  : {}),
               }}
-              className="word-editor-surface min-h-[calc(297mm-45mm)] w-full max-w-full text-stone-900 outline-none"
-              style={{ color: "#1c1917" }}
             />
+            {!immersiveReading && pageCount > 1
+              ? Array.from({ length: pageCount - 1 }, (_, i) => (
+                  <div
+                    key={`page-tail-margin-${i}`}
+                    aria-hidden
+                    className="pointer-events-none absolute right-0 left-0 z-[3] bg-white"
+                    style={{
+                      top: `calc(${mm(25)} + ${(i + 1) * PAGE_SLICE_PX - PAGE_VISUAL_GAP_PX - PAGE_BREAK_MARGIN_PX}px)`,
+                      height: PAGE_BREAK_MARGIN_PX,
+                    }}
+                  />
+                ))
+              : null}
           </div>
         </div>
       </div>
 
-      <footer className="fixed bottom-0 left-0 right-0 z-40 flex h-9 items-center justify-between gap-3 border-t border-stone-500 bg-stone-700 px-3 text-xs text-stone-100 sm:text-sm">
-        <span className="tabular-nums">
-          Kelime: {wordCount} · Karakter: {charCount}
-        </span>
-        <span className="tabular-nums">
-          Sayfa {currentPage} / {pageCount}
-        </span>
-        <Link
-          to="/"
-          className="shrink-0 text-stone-200 underline decoration-1 underline-offset-2 hover:text-white"
-        >
-          Ana sayfa
-        </Link>
-      </footer>
+      {!immersiveReading ? (
+        <footer className="fixed bottom-0 left-0 right-0 z-[55] flex h-9 items-center justify-between gap-3 border-t border-stone-500 bg-stone-700 px-3 text-xs text-stone-100 sm:text-sm">
+          <span className="tabular-nums">
+            Kelime: {wordCount} · Karakter: {charCount}
+          </span>
+          <span className="tabular-nums">
+            Sayfa {currentPage} / {pageCount}
+          </span>
+          <Link
+            to="/"
+            className="shrink-0 text-stone-200 underline decoration-1 underline-offset-2 hover:text-white"
+          >
+            Ana sayfa
+          </Link>
+        </footer>
+      ) : null}
     </div>
   );
 }
