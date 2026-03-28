@@ -1,3 +1,4 @@
+import { stripHtmlToPlainText } from "../lib/readingText.js";
 import { getStorageJSON, setStorageJSON, STORAGE_KEYS } from "./storage.js";
 
 const KEY = STORAGE_KEYS.READING_HISTORY;
@@ -51,11 +52,16 @@ export function getReadingHistory() {
   return out;
 }
 
+/** @param {string} raw */
+function hasTextContent(raw) {
+  return stripHtmlToPlainText(raw).trim().length > 0;
+}
+
 /** @param {Omit<ReadingHistoryItem, 'id' | 'createdAt'> & Partial<Pick<ReadingHistoryItem, 'id' | 'createdAt'>>} entry */
 /** @returns {string | null} */
 export function appendReadingHistoryEntry(entry) {
   const content = entry.content.trim();
-  if (!content) return null;
+  if (!content || !hasTextContent(content)) return null;
 
   const id =
     entry.id ??
@@ -79,6 +85,32 @@ export function appendReadingHistoryEntry(entry) {
   return id;
 }
 
+/**
+ * @param {string} id
+ * @param {{ title?: string, content?: string }} patch
+ * @returns {boolean}
+ */
+export function updateReadingHistoryEntry(id, patch) {
+  const list = getReadingHistory();
+  const idx = list.findIndex((x) => x.id === id);
+  if (idx === -1) return false;
+  const cur = list[idx];
+  /** @type {ReadingHistoryItem} */
+  const nextItem = { ...cur };
+  if (patch.title != null) {
+    const t = patch.title.trim();
+    if (t) nextItem.title = t;
+  }
+  if (patch.content != null) {
+    const c = patch.content.trim();
+    if (!hasTextContent(c)) return false;
+    nextItem.content = c;
+  }
+  const rest = list.filter((x) => x.id !== id);
+  setStorageJSON(KEY, [nextItem, ...rest]);
+  return true;
+}
+
 /** Başlık: metnin ilk 30 grapheme’i */
 export function titleFromTextSnippet(plain) {
   const t = plain.replace(/\s+/g, " ").trim();
@@ -91,8 +123,8 @@ export function titleFromTextSnippet(plain) {
 
 /** Kart önizlemesi */
 export function previewFromContent(content, maxLen = 100) {
-  const oneLine = content.replace(/\s+/g, " ").trim();
-  if (!oneLine) return "";
-  const chars = [...oneLine];
+  const plain = stripHtmlToPlainText(content).replace(/\s+/g, " ").trim();
+  if (!plain) return "";
+  const chars = [...plain];
   return chars.slice(0, maxLen).join("") + (chars.length > maxLen ? "…" : "");
 }

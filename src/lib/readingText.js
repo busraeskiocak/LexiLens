@@ -1,5 +1,19 @@
 import { createElement } from "react";
 
+/** @param {string} s */
+export function isProbablyHtml(s) {
+  return typeof s === "string" && /<\/?[a-z][\s\S]*>/i.test(s) && s.includes("<");
+}
+
+/** @param {string} s */
+function escapeHtml(s) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /** b=mavi, d=kırmızı, p=turuncu, q=mor (Görev 5) */
 export const READING_LETTER_COLORS = {
   b: "#1d4ed8",
@@ -52,4 +66,41 @@ export function colorizeLineToParts(line, lineIndex) {
   }
   flush();
   return nodes.length ? nodes : ["\u00a0"];
+}
+
+/**
+ * Düz metni satır başına <p> ve b/d/p/q harf renkleriyle HTML’e çevirir (contenteditable için).
+ * @param {string} text
+ */
+export function plainTextToColorizedHtml(text) {
+  const lines = text.split(/\r?\n/);
+  return lines
+    .map((line) => {
+      if (line === "") return "<p><br></p>";
+      let html = "";
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        const lower = ch.toLowerCase();
+        const color = READING_LETTER_COLORS[lower];
+        if (color) {
+          html += `<span style="color:${color};font-weight:600">${escapeHtml(ch)}</span>`;
+        } else {
+          html += escapeHtml(ch);
+        }
+      }
+      return `<p>${html}</p>`;
+    })
+    .join("");
+}
+
+/**
+ * @param {string} html
+ */
+export function stripHtmlToPlainText(html) {
+  if (!html || typeof html !== "string") return "";
+  if (typeof DOMParser !== "undefined") {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    return doc.body.textContent ?? "";
+  }
+  return html.replace(/<[^>]+>/g, " ");
 }

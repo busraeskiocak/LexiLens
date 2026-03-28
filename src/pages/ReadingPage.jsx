@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import FixedBackButton from "../components/FixedBackButton.jsx";
+import WordLikeWorkbench from "../components/WordLikeWorkbench.jsx";
 import { canBrowserGoBack } from "../utils/historyNav.js";
 import { pdfjs } from "react-pdf";
 import mammoth from "mammoth";
-import { FONT_OPTIONS } from "../lib/upp.js";
-import { colorizeLineToParts, READING_LETTER_COLORS } from "../lib/readingText.js";
+import { isProbablyHtml } from "../lib/readingText.js";
 import { getUpp } from "../utils/storage.js";
 import {
   appendReadingHistoryEntry,
@@ -40,26 +40,6 @@ async function extractDocxPlainText(file) {
   return result.value.trim();
 }
 
-function readingStylesFromUpp(upp) {
-  const typo = upp?.typography ?? {};
-  const bg = upp?.background?.color ?? "#FFFFFF";
-  const fontId = upp?.fontPreference ?? "opendyslexic";
-  const fontFamily =
-    FONT_OPTIONS.find((f) => f.id === fontId)?.fontFamily ??
-    '"OpenDyslexic", sans-serif';
-
-  const letterSpacingEm =
-    typeof typo.letterSpacingEm === "number" && !Number.isNaN(typo.letterSpacingEm)
-      ? typo.letterSpacingEm
-      : 0.06;
-  const lineHeight =
-    typeof typo.lineHeight === "number" && !Number.isNaN(typo.lineHeight)
-      ? typo.lineHeight
-      : 1.65;
-
-  return { fontFamily, letterSpacing: `${letterSpacingEm}em`, lineHeight, backgroundColor: bg };
-}
-
 function formatDocDate(iso) {
   try {
     return new Date(iso).toLocaleString("tr-TR", {
@@ -86,8 +66,6 @@ export default function ReadingPage() {
     else navigate("/");
   }, [navigate]);
   const fileInputRef = useRef(null);
-  const scrollRef = useRef(null);
-  const lineRefs = useRef([]);
 
   const [screen, setScreen] = useState(/** @type {'list' | 'reading'} */ ("list"));
   const [documents, setDocuments] = useState(() => getReadingHistory());
@@ -102,62 +80,15 @@ export default function ReadingPage() {
   const [loadKind, setLoadKind] = useState("");
   const [loadError, setLoadError] = useState(null);
 
-  const [focusMode, setFocusMode] = useState(false);
-  const [activeLine, setActiveLine] = useState(0);
-
-  const readStyle = useMemo(
-    () => (upp && typeof upp === "object" ? readingStylesFromUpp(upp) : null),
-    [upp]
-  );
-
-  const lines = useMemo(() => sourceText.split(/\r?\n/), [sourceText]);
-
   const refreshDocuments = useCallback(() => {
     setDocuments(getReadingHistory());
   }, []);
 
-  useEffect(() => {
-    lineRefs.current = lineRefs.current.slice(0, lines.length);
-  }, [lines.length]);
-
-  useEffect(() => {
-    setActiveLine((i) =>
-      lines.length === 0 ? 0 : Math.min(Math.max(0, i), lines.length - 1)
-    );
-  }, [lines.length]);
-
-  useEffect(() => {
-    if (!focusMode || lines.length === 0) return;
-    const root = scrollRef.current;
-    if (!root) return;
-
-    const obs = new IntersectionObserver(
-      (entries) => {
-        let bestEl = null;
-        let best = 0;
-        for (const e of entries) {
-          if (e.isIntersecting && e.intersectionRatio >= best) {
-            best = e.intersectionRatio;
-            bestEl = e.target;
-          }
-        }
-        if (bestEl) {
-          const idx = Number(bestEl.getAttribute("data-line-index"));
-          if (!Number.isNaN(idx)) setActiveLine(idx);
-        }
-      },
-      {
-        root,
-        rootMargin: "-40% 0px -40% 0px",
-        threshold: [0, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 1],
-      }
-    );
-
-    for (const el of lineRefs.current) {
-      if (el) obs.observe(el);
-    }
-    return () => obs.disconnect();
-  }, [focusMode, lines.length, sourceText]);
+  const handleReadingSaved = useCallback(() => {
+    refreshDocuments();
+    const cur = getReadingHistory().find((x) => x.id === activeDocId);
+    if (cur) setSourceText(cur.content);
+  }, [activeDocId, refreshDocuments]);
 
   useEffect(() => {
     if (!sheetOpen) {
@@ -189,7 +120,6 @@ export default function ReadingPage() {
   const openReading = useCallback((item) => {
     setSourceText(item.content);
     setActiveDocId(item.id);
-    setFocusMode(false);
     setScreen("reading");
     setLoadError(null);
   }, []);
@@ -214,7 +144,6 @@ export default function ReadingPage() {
         if (newId) {
           setSourceText(text);
           setActiveDocId(newId);
-          setFocusMode(false);
           setScreen("reading");
         }
       } catch (e) {
@@ -264,38 +193,11 @@ export default function ReadingPage() {
     if (newId) {
       setSourceText(text);
       setActiveDocId(newId);
-      setFocusMode(false);
       setSheetOpen(false);
       setSheetDraft("");
       setScreen("reading");
     }
   }, [sheetDraft, refreshDocuments]);
-
-  const onKeyDownPanel = useCallback(
-    (e) => {
-      if (!focusMode || lines.length === 0) return;
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActiveLine((i) => {
-          const n = Math.min(lines.length - 1, i + 1);
-          requestAnimationFrame(() =>
-            lineRefs.current[n]?.scrollIntoView({ block: "nearest" })
-          );
-          return n;
-        });
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActiveLine((i) => {
-          const n = Math.max(0, i - 1);
-          requestAnimationFrame(() =>
-            lineRefs.current[n]?.scrollIntoView({ block: "nearest" })
-          );
-          return n;
-        });
-      }
-    },
-    [focusMode, lines.length]
-  );
 
   const busy = loadKind !== "";
 
@@ -305,7 +207,7 @@ export default function ReadingPage() {
     return d?.title ?? "Okuma";
   }, [activeDocId, documents]);
 
-  if (!upp || typeof upp !== "object" || !readStyle) {
+  if (!upp || typeof upp !== "object") {
     return (
       <>
         <FixedBackButton onClick={goBackOrHome} aria-label="Geri" />
@@ -331,121 +233,23 @@ export default function ReadingPage() {
     );
   }
 
-  if (screen === "reading") {
+  if (screen === "reading" && activeDocId) {
     return (
       <>
         <FixedBackButton
           onClick={() => setScreen("list")}
           aria-label="Belgeler listesine dön"
         />
-        <main className="mx-auto min-h-screen max-w-3xl px-4 py-6 pb-16">
-        <header className="mb-6 flex flex-wrap items-end justify-between gap-3 border-b border-stone-200 pb-4">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium text-stone-500">Okuma</p>
-            <h1 className="truncate text-lg font-semibold text-stone-900 sm:text-xl">
-              {activeTitle}
-            </h1>
-          </div>
-          <Link
-            to="/profil"
-            className="shrink-0 text-sm font-medium text-emerald-900 underline decoration-2 underline-offset-4"
-          >
-            Profil
-          </Link>
-        </header>
-
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <label className="flex cursor-pointer items-center gap-3">
-            <span className="text-sm font-medium text-stone-800">Odak modu</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={focusMode}
-              aria-label={focusMode ? "Odak modu açık" : "Odak modu kapalı"}
-              onClick={() => setFocusMode((v) => !v)}
-              className={`relative h-9 w-16 shrink-0 rounded-full transition-colors ${
-                focusMode ? "bg-emerald-600" : "bg-stone-300"
-              }`}
-            >
-              <span
-                className={`absolute top-1 left-1 size-7 rounded-full bg-white shadow transition-transform ${
-                  focusMode ? "translate-x-7" : ""
-                }`}
-              />
-            </button>
-          </label>
-          <p className="text-sm text-stone-600 md:text-right">
-            Odak açıkken ortadaki satır vurgulanır; satıra tıklayın veya ok tuşlarını kullanın.
-          </p>
-        </div>
-
-        <div className="mt-5 flex flex-wrap gap-4 text-xs text-stone-700">
-          <span className="font-semibold">Renk anahtarı:</span>
-          {(
-            [
-              ["b", "mavi"],
-              ["d", "kırmızı"],
-              ["p", "turuncu"],
-              ["q", "mor"],
-            ]
-          ).map(([L, tr]) => (
-            <span key={L} className="inline-flex items-center gap-1">
-              <span className="font-bold" style={{ color: READING_LETTER_COLORS[L] }}>
-                {L}
-              </span>
-              <span>= {tr}</span>
-            </span>
-          ))}
-        </div>
-
-        <section className="mt-4">
-          <h2 className="sr-only">UPP ile biçimlendirilmiş metin</h2>
-          <div
-            ref={scrollRef}
-            tabIndex={0}
-            role="article"
-            aria-label="Okuma alanı"
-            onKeyDown={onKeyDownPanel}
-            className="mt-2 max-h-[min(72vh,600px)] overflow-y-auto rounded-2xl border border-stone-200 px-5 py-4 shadow-inner outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2"
-            style={{
-              ...readStyle,
-              color: "#1c1917",
-            }}
-          >
-            {sourceText.trim() === "" ? (
-              <p className="text-stone-500">Bu belgede görüntülenecek metin yok.</p>
-            ) : (
-              lines.map((line, i) => {
-                const active = focusMode && i === activeLine;
-                return (
-                  <p
-                    key={i}
-                    ref={(el) => {
-                      lineRefs.current[i] = el;
-                    }}
-                    data-line-index={i}
-                    onClick={() => focusMode && setActiveLine(i)}
-                    className={`my-1 rounded-r-md py-1 transition-colors ${
-                      active
-                        ? "bg-amber-200/90 border-l-4 border-amber-600 pl-3 -ml-1 shadow-sm"
-                        : "border-l-4 border-transparent pl-3 -ml-1"
-                    } ${focusMode ? "cursor-pointer" : ""}`}
-                  >
-                    {colorizeLineToParts(line, i)}
-                  </p>
-                );
-              })
-            )}
-          </div>
-        </section>
-
-        <Link
-          to="/"
-          className="mt-8 inline-block text-sm text-emerald-900 underline decoration-2 underline-offset-4"
-        >
-          Ana sayfa
-        </Link>
-        </main>
+        <WordLikeWorkbench
+          key={activeDocId}
+          upp={upp}
+          mode="reading"
+          initialTitle={activeTitle}
+          initialBody={sourceText}
+          colorizePlainOnLoad={!isProbablyHtml(sourceText)}
+          documentId={activeDocId}
+          onReadingSaved={handleReadingSaved}
+        />
       </>
     );
   }

@@ -19,6 +19,15 @@ body {
   @apply min-h-screen;
 }
 
+/* Word benzeri contenteditable: paragraflar */
+.word-editor-surface p {
+  margin: 0.2em 0;
+  min-height: 1.35em;
+}
+.word-editor-surface p:first-child {
+  margin-top: 0;
+}
+
 /* Karşılama: sade giriş animasyonu (Görev 2) */
 @keyframes welcome-in {
   from {
