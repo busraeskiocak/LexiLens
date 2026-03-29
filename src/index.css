@@ -25,6 +25,13 @@ body {
 }
 
 /* Word benzeri contenteditable: paragraflar (--lexi-para-gap editör inline style ile) */
+.word-editor-surface {
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  word-break: normal;
+  max-width: 100%;
+  box-sizing: border-box;
+}
 .word-editor-surface p {
   margin: 0;
   margin-bottom: var(--lexi-para-gap, 4px);
@@ -45,6 +52,11 @@ body {
   font-size: medium;
   line-height: normal;
   text-align: start;
+}
+
+/* Karşılaştırma: üst sarmalayıcı font-size ile ölçeklenebilir em zinciri */
+.word-editor-surface--rich.word-editor-surface--rich-inherit {
+  font-size: 1em;
 }
 
 .word-editor-surface--rich h1 {
@@ -110,8 +122,10 @@ body {
 .word-editor-surface--rich table {
   border-collapse: collapse;
   width: 100%;
+  table-layout: fixed;
   margin: 1em 0;
   font-size: inherit;
+  box-sizing: border-box;
 }
 
 .word-editor-surface--rich td,
@@ -119,6 +133,9 @@ body {
   border: 1px solid #a8a29e;
   padding: 0.35em 0.5em;
   vertical-align: top;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  box-sizing: border-box;
 }
 
 .word-editor-surface--rich th {
@@ -135,7 +152,10 @@ body {
 .word-editor-surface--rich pre {
   margin: 1em 0;
   padding: 0.75em 1em;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  white-space: pre-wrap;
   background: #f5f5f4;
   border-radius: 0.5rem;
   font-family: ui-monospace, monospace;
@@ -268,7 +288,8 @@ body {
 
 .word-editor-surface--rich table.lexi-docx-table {
   border-collapse: collapse;
-  table-layout: auto;
+  table-layout: fixed;
+  width: 100%;
 }
 
 .word-editor-surface--rich table.lexi-docx-table td,
@@ -277,20 +298,55 @@ body {
   min-width: 2.5em;
 }
 
-/* Okuma: DOCX/HTML yakınlaştırma (layout genişliği scale ile telafi) */
+/* Karşılaştırma / kaydırma: sayfa sütunu yatayda ortalı, üstten hizalı */
+.lexi-compare-page-column {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  width: 100%;
+}
+
+/* Okuma: yakınlaştırma yalnızca sayfa kutusunu ölçekler (transform); punto CSS ile değişmez */
 .lexi-reading-zoom-outer {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
   width: 100%;
   max-width: 100%;
   overflow: visible;
+  box-sizing: border-box;
 }
 
 .lexi-reading-zoom-inner {
+  width: 210mm;
+  max-width: 100%;
+  flex-shrink: 0;
   transform: scale(var(--lexi-read-zoom, 1));
   transform-origin: top center;
-  width: calc(100% / var(--lexi-read-zoom, 1));
-  max-width: 100%;
-  margin-left: auto;
-  margin-right: auto;
+  box-sizing: border-box;
+}
+
+/* Karşılaştırma: sayfa bandında paragraf / tablo satırı bölünmesini azalt */
+.word-editor-surface--compare-paged p,
+.word-editor-surface--compare-paged h1,
+.word-editor-surface--compare-paged h2,
+.word-editor-surface--compare-paged h3,
+.word-editor-surface--compare-paged h4,
+.word-editor-surface--compare-paged h5,
+.word-editor-surface--compare-paged h6,
+.word-editor-surface--compare-paged blockquote,
+.word-editor-surface--compare-paged pre,
+.word-editor-surface--compare-paged ul,
+.word-editor-surface--compare-paged ol,
+.word-editor-surface--compare-paged li,
+.word-editor-surface--compare-paged table,
+.word-editor-surface--compare-paged thead,
+.word-editor-surface--compare-paged tbody,
+.word-editor-surface--compare-paged tr,
+.word-editor-surface--compare-paged img {
+  page-break-inside: avoid;
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
 }
 
 /* PDF: canvas + metin katmanı + notlar; metin seçimi üstte kalsın */

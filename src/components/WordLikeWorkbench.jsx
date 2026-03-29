@@ -93,29 +93,86 @@ function IconAlignJustify({ className }) {
   );
 }
 
-/** ~A4 iç yüksekliği (px, 96dpi) — sayfa sayımı için */
-const PAGE_SLICE_PX = 1008;
-/** Çok sayfalı belgelerde sayfalar arası boşluk (px); kenar boşluğu sonrası içerik PAGE_SLICE ile hizalı */
-const PAGE_VISUAL_GAP_PX = 8;
-/** Sayfa sonu ile gri boşluk arası: kesilen satırları beyazla örter (px) */
-const PAGE_BREAK_MARGIN_PX = 22;
-
 const A4_MM_W = 210;
 const A4_MM_H = 297;
+/** Word benzeri: üst/alt 20mm, sol/sağ 25mm */
+const PAGE_MARGIN_TOP_MM = 20;
+const PAGE_MARGIN_BOTTOM_MM = 20;
+const PAGE_MARGIN_LR_MM = 25;
+/** Sayfalar arası gri boşluk (px), en az 20 */
+const PAGE_GAP_PX = 24;
 
 function mm(n) {
   return `${n}mm`;
 }
 
-/** Metni sayfa aralığında gizler; sonsuz tekrar yok (son sayfada hayalet çizgi olmaz). */
-function editorPageMaskImage(pageCount) {
+/** mm → px (96dpi) */
+function mmToPx(mmVal) {
+  return (mmVal / 25.4) * 96;
+}
+
+/** Bir A4 sayfasının dikey boyutu (px) */
+const PAGE_SHEET_H_PX = mmToPx(A4_MM_H);
+/** Yazı alanı yüksekliği: 297 − 40 mm */
+const PAGE_INNER_H_PX = Math.round(
+  mmToPx(A4_MM_H - PAGE_MARGIN_TOP_MM - PAGE_MARGIN_BOTTOM_MM)
+);
+/** Üstte sayfa üstü + altta sayfa altı + Gri aralık (maske/transisyon bölgesi) */
+const PAGE_INTER_BREAK_PX = Math.round(
+  PAGE_SHEET_H_PX + PAGE_GAP_PX - PAGE_INNER_H_PX
+);
+/** Bir sonraki sayfanın üst kenarına kadar (sayfa + gri boşluk) */
+const PAGE_STACK_STRIDE_PX = PAGE_SHEET_H_PX + PAGE_GAP_PX;
+
+/** İçerik kutusu genişliği: 210 − 50 mm (px) */
+const PAGE_INNER_W_PX = mmToPx(A4_MM_W - 2 * PAGE_MARGIN_LR_MM);
+
+/** Belge yakınlaştırma: %50–%200, varsayılan %100 */
+const DOC_ZOOM_MIN = 0.5;
+const DOC_ZOOM_MAX = 2;
+const DOC_ZOOM_DEFAULT = 1;
+const DOC_ZOOM_STEP = 0.05;
+
+/**
+ * Okuma yakınlaştırması (HTML karşılaştırma): sayfa kağıdı ve iç alan px cinsinden; font/transform yok.
+ * @param {number} zoom
+ */
+function readingPageLayoutPx(zoom) {
+  const z = Math.min(
+    DOC_ZOOM_MAX,
+    Math.max(DOC_ZOOM_MIN, Number.isFinite(zoom) ? zoom : DOC_ZOOM_DEFAULT)
+  );
+  const sheetW = mmToPx(A4_MM_W) * z;
+  const sheetH = PAGE_SHEET_H_PX * z;
+  const gapPx = PAGE_GAP_PX * z;
+  const innerW = PAGE_INNER_W_PX * z;
+  const innerH = PAGE_INNER_H_PX * z;
+  const padTop = mmToPx(PAGE_MARGIN_TOP_MM) * z;
+  const padLR = mmToPx(PAGE_MARGIN_LR_MM) * z;
+  const stackStride = sheetH + gapPx;
+  const interBreak = sheetH + gapPx - innerH;
+  return {
+    z,
+    sheetW,
+    sheetH,
+    gapPx,
+    innerW,
+    innerH,
+    padTop,
+    padLR,
+    stackStride,
+    interBreak,
+  };
+}
+
+function editorPageMaskImageScaled(pageCount, layout) {
   if (pageCount <= 1) return undefined;
-  const L = PAGE_SLICE_PX;
-  const G = PAGE_VISUAL_GAP_PX;
+  const L = layout.innerH;
+  const B = layout.interBreak;
   const stops = ["#000 0px"];
   for (let p = 1; p < pageCount; p++) {
-    const gapStart = p * L - G;
-    const gapEnd = p * L;
+    const gapStart = p * L + (p - 1) * B;
+    const gapEnd = gapStart + B;
     stops.push(
       `#000 ${gapStart}px`,
       `transparent ${gapStart}px`,
@@ -125,6 +182,135 @@ function editorPageMaskImage(pageCount) {
   }
   stops.push("#000 100%");
   return `linear-gradient(to bottom, ${stops.join(", ")})`;
+}
+
+function editorContentFlowHeightPxForLayout(pageCount, layout) {
+  const n = Math.max(1, pageCount);
+  return n * layout.innerH + Math.max(0, n - 1) * layout.interBreak;
+}
+
+/** Karşılaştırma HTML: iki sütun için aynı sayfa kutusu / padding hesabı */
+function readingComparePageChrome(layout) {
+  const w = `${layout.sheetW}px`;
+  return {
+    sheetOuter: { width: w, maxWidth: "100%" },
+    pageRoot: { width: w },
+    contentPad: { padding: `${layout.padTop}px ${layout.padLR}px` },
+  };
+}
+
+/**
+ * @param {ReturnType<typeof readingPageLayoutPx>} layout
+ * @param {Record<string, string | number>} extraStyle
+ */
+function readingCompareEditorSurfaceStyles(layout, pageCount, extraStyle) {
+  const mask =
+    pageCount > 1 ? editorPageMaskImageScaled(pageCount, layout) : undefined;
+  const flowH = editorContentFlowHeightPxForLayout(pageCount, layout);
+  return {
+    ...extraStyle,
+    maxWidth: `${layout.innerW}px`,
+    marginLeft: "auto",
+    marginRight: "auto",
+    minHeight: layout.innerH,
+    ...(pageCount > 1 && mask
+      ? {
+          WebkitMaskImage: mask,
+          WebkitMaskRepeat: "no-repeat",
+          WebkitMaskSize: `100% ${flowH}px`,
+          maskImage: mask,
+          maskRepeat: "no-repeat",
+          maskSize: `100% ${flowH}px`,
+        }
+      : {}),
+  };
+}
+
+/** Karşılaştırma sol paneli — referans tipografi */
+const COMPARE_REF_FONT_FAMILY =
+  'Times New Roman, Times, "Liberation Serif", serif';
+
+/** Kişiselleştirilmiş sütun kök fontu: orijinal ~16px tabanın bu oranı (yakınlaştırma fontu değiştirmez) */
+const COMPARE_PERSONALIZED_FONT_TO_ORIGINAL = 0.85;
+
+/** Metni sayfa aralığında gizler; sayfalar arası bantta metin görünmez */
+function editorPageMaskImage(pageCount) {
+  if (pageCount <= 1) return undefined;
+  const L = PAGE_INNER_H_PX;
+  const B = PAGE_INTER_BREAK_PX;
+  const stops = ["#000 0px"];
+  for (let p = 1; p < pageCount; p++) {
+    const gapStart = p * L + (p - 1) * B;
+    const gapEnd = gapStart + B;
+    stops.push(
+      `#000 ${gapStart}px`,
+      `transparent ${gapStart}px`,
+      `transparent ${gapEnd}px`,
+      `#000 ${gapEnd}px`
+    );
+  }
+  stops.push("#000 100%");
+  return `linear-gradient(to bottom, ${stops.join(", ")})`;
+}
+
+/**
+ * Word benzeri üst üste beyaz kağıtlar (gri arka plan üzerinde).
+ * @param {{ pageCount: number, layout?: ReturnType<typeof readingPageLayoutPx> }} p
+ */
+function ReadingPageStackBackground({ pageCount, layout }) {
+  const n = Math.max(1, pageCount);
+  const sheetW = layout ? layout.sheetW : mmToPx(A4_MM_W);
+  const sheetH = layout ? layout.sheetH : PAGE_SHEET_H_PX;
+  const gapPx = layout ? layout.gapPx : PAGE_GAP_PX;
+  const stackStride = layout ? layout.stackStride : PAGE_STACK_STRIDE_PX;
+  const totalH = n * sheetH + Math.max(0, n - 1) * gapPx;
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute top-0 right-0 left-0 z-0 mx-auto"
+      style={{
+        width: layout ? `${sheetW}px` : mm(A4_MM_W),
+        height: totalH,
+      }}
+    >
+      {Array.from({ length: n }, (_, i) => (
+        <div
+          key={i}
+          className="absolute right-0 left-0 bg-white shadow-[0_2px_10px_rgba(0,0,0,0.14)] ring-1 ring-stone-300/90"
+          style={{
+            top: i * stackStride,
+            height: sheetH,
+            boxSizing: "border-box",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Maske yüksekliği: tüm sayfa içi akış (sayfa içi + aralar) */
+function editorContentFlowHeightPx(pageCount) {
+  const n = Math.max(1, pageCount);
+  return n * PAGE_INNER_H_PX + Math.max(0, n - 1) * PAGE_INTER_BREAK_PX;
+}
+
+/** Alt çubuk sayfa göstergesi — kaydırma %'si ile */
+function pageIndexFromScrollRatio(scrollEl, totalPages) {
+  if (!scrollEl || totalPages < 1) return 1;
+  const max = scrollEl.scrollHeight - scrollEl.clientHeight;
+  if (max <= 0) return 1;
+  const r = Math.min(1, Math.max(0, scrollEl.scrollTop / max));
+  return Math.min(totalPages, Math.max(1, 1 + Math.floor(r * (totalPages - 1))));
+}
+
+function clearLexiPageNudgeMarks(root) {
+  if (!root) return;
+  root.querySelectorAll("[data-lexi-page-nudge]").forEach((node) => {
+    if (!(node instanceof HTMLElement)) return;
+    node.style.marginTop = "";
+    node.style.removeProperty("margin-top");
+    delete node.dataset.lexiPageNudge;
+  });
 }
 
 /**
@@ -140,16 +326,11 @@ function keepEditorSelection(e) {
   e.preventDefault();
 }
 
-const READING_ZOOM_MIN = 0.65;
-const READING_ZOOM_MAX = 2.5;
-const READING_ZOOM_DEFAULT = 1.1;
-const READING_ZOOM_STEP = 0.05;
-
 /** @param {{ zoom: number, children: import("react").ReactNode, className?: string }} p */
 function ReadingZoomWrap({ zoom, children, className = "" }) {
   const z = Math.min(
-    READING_ZOOM_MAX,
-    Math.max(READING_ZOOM_MIN, Number.isFinite(zoom) ? zoom : READING_ZOOM_DEFAULT)
+    DOC_ZOOM_MAX,
+    Math.max(DOC_ZOOM_MIN, Number.isFinite(zoom) ? zoom : DOC_ZOOM_DEFAULT)
   );
   return (
     <div
@@ -161,32 +342,49 @@ function ReadingZoomWrap({ zoom, children, className = "" }) {
   );
 }
 
-/** @param {{ label: string, value: number, onChange: (n: number) => void, id: string }} p */
-function ReadingZoomSlider({ label, value, onChange, id }) {
+/** @param {{ label: string, value: number, onChange: (n: number) => void, id: string, variant?: "panel" | "footer" }} p */
+function ReadingZoomSlider({ label, value, onChange, id, variant = "panel" }) {
   const v = Math.min(
-    READING_ZOOM_MAX,
-    Math.max(READING_ZOOM_MIN, Number.isFinite(value) ? value : READING_ZOOM_DEFAULT)
+    DOC_ZOOM_MAX,
+    Math.max(DOC_ZOOM_MIN, Number.isFinite(value) ? value : DOC_ZOOM_DEFAULT)
   );
+  const footer = variant === "footer";
+  const pct = `%${Math.round(v * 100)}`;
   return (
-    <label htmlFor={id} className="flex min-w-0 flex-1 items-center gap-2">
-      <span className="shrink-0 text-[10px] font-semibold text-stone-700 sm:text-xs">
+    <label
+      htmlFor={id}
+      className={`flex min-w-0 items-center gap-1.5 sm:gap-2 ${
+        footer ? "max-w-[10.5rem] sm:max-w-[13rem] md:max-w-[14rem]" : "flex-1"
+      }`}
+    >
+      <span
+        className={`shrink-0 text-[10px] font-semibold sm:text-xs ${
+          footer ? "text-stone-300" : "text-stone-700"
+        }`}
+      >
         {label}
       </span>
       <input
         id={id}
         type="range"
-        min={READING_ZOOM_MIN}
-        max={READING_ZOOM_MAX}
-        step={READING_ZOOM_STEP}
+        min={DOC_ZOOM_MIN}
+        max={DOC_ZOOM_MAX}
+        step={DOC_ZOOM_STEP}
         value={v}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="h-2 min-w-0 flex-1 accent-emerald-700"
-        aria-valuemin={READING_ZOOM_MIN}
-        aria-valuemax={READING_ZOOM_MAX}
+        className={`h-2 min-w-[52px] shrink ${
+          footer ? "flex-1 accent-emerald-400" : "min-w-0 flex-1 accent-emerald-700"
+        }`}
+        aria-valuemin={DOC_ZOOM_MIN}
+        aria-valuemax={DOC_ZOOM_MAX}
         aria-valuenow={v}
       />
-      <span className="w-11 shrink-0 text-right text-[10px] tabular-nums text-stone-800 sm:text-xs">
-        {Math.round(v * 100)}%
+      <span
+        className={`w-9 shrink-0 text-right text-[10px] tabular-nums sm:w-10 sm:text-xs ${
+          footer ? "text-stone-100" : "text-stone-800"
+        }`}
+      >
+        {pct}
       </span>
     </label>
   );
@@ -334,6 +532,10 @@ export default function WordLikeWorkbench({
   /** Karşılaştırma layout'u editörü yeniden mount ettiğinde kişiselleştirilmiş HTML korunur */
   const personalizedHtmlRef = useRef("");
   const scrollAreaRef = useRef(null);
+  /** Karşılaştırma sol metin kökü (yükseklik / sayfa sayımı) */
+  const compareOriginalContentRef = useRef(null);
+  /** Karşılaştırma (yalnız PDF): sol panel kaydırma */
+  const compareOriginalScrollRef = useRef(null);
   /** Araç çubuğuna tıklanınca kaybolan seçimi geri yüklemek için */
   const savedRangeRef = useRef(null);
   const spellRef = useRef(null);
@@ -359,11 +561,14 @@ export default function WordLikeWorkbench({
   /** Karşılaştır toggle'ında useLayoutEffect'in yalnızca gerçek geçişte çalışması için */
   const prevCompareSplitRef = useRef(compareSplit);
   const [pdfPageTotal, setPdfPageTotal] = useState(1);
-  const [readingZoomSingle, setReadingZoomSingle] = useState(READING_ZOOM_DEFAULT);
+  const [readingZoomSingle, setReadingZoomSingle] = useState(DOC_ZOOM_DEFAULT);
   const [readingZoomCompareLeft, setReadingZoomCompareLeft] =
-    useState(READING_ZOOM_DEFAULT);
+    useState(DOC_ZOOM_DEFAULT);
   const [readingZoomCompareRight, setReadingZoomCompareRight] =
-    useState(READING_ZOOM_DEFAULT);
+    useState(DOC_ZOOM_DEFAULT);
+  const [writingZoom, setWritingZoom] = useState(DOC_ZOOM_DEFAULT);
+  const [compareOriginalPageCount, setCompareOriginalPageCount] = useState(1);
+  const [currentPageCompareLeft, setCurrentPageCompareLeft] = useState(1);
 
   const isPdfReading = mode === "reading" && readingDocKind === "pdf";
   const pdfFileBytes = useMemo(() => {
@@ -426,20 +631,36 @@ export default function WordLikeWorkbench({
     personalizedHtmlRef.current = "";
     prevCompareSplitRef.current = false;
     setCompareSplit(false);
-    setReadingZoomSingle(READING_ZOOM_DEFAULT);
-    setReadingZoomCompareLeft(READING_ZOOM_DEFAULT);
-    setReadingZoomCompareRight(READING_ZOOM_DEFAULT);
+    setReadingZoomSingle(DOC_ZOOM_DEFAULT);
+    setReadingZoomCompareLeft(DOC_ZOOM_DEFAULT);
+    setReadingZoomCompareRight(DOC_ZOOM_DEFAULT);
+    setCurrentPageCompareLeft(1);
   }, [documentId, readingDocKind]);
 
-  const immersivePdfBoost = immersiveReading ? 1.08 : 1;
-  const pdfScaleSingle = readingZoomSingle * immersivePdfBoost;
-  const pdfScaleCompareLeft = readingZoomCompareLeft * immersivePdfBoost;
-  const pdfScaleCompareRight = readingZoomCompareRight * immersivePdfBoost;
+  const pdfScaleSingle = readingZoomSingle;
+  const pdfScaleCompareLeft = readingZoomCompareLeft;
+  const pdfScaleCompareRight = readingZoomCompareRight;
 
   const uppBackgroundColor =
     upp?.background && typeof upp.background.color === "string"
       ? upp.background.color
       : "#FFF8E7";
+
+  const sheetPageCount = useMemo(() => {
+    if (mode === "reading" && compareSplit && !isPdfReading) {
+      return Math.max(pageCount, compareOriginalPageCount);
+    }
+    return pageCount;
+  }, [mode, compareSplit, isPdfReading, pageCount, compareOriginalPageCount]);
+
+  const htmlCompareLayoutLeft = useMemo(
+    () => readingPageLayoutPx(readingZoomCompareLeft),
+    [readingZoomCompareLeft]
+  );
+  const htmlCompareLayoutRight = useMemo(
+    () => readingPageLayoutPx(readingZoomCompareRight),
+    [readingZoomCompareRight]
+  );
 
   const applyUppTypography = useCallback(() => {
     const el = editorRef.current;
@@ -503,13 +724,19 @@ export default function WordLikeWorkbench({
     setWordCount(words);
     setCharCount(plain.length);
     const contentH = el.scrollHeight;
-    const rawPages = Math.ceil((Number.isFinite(contentH) ? contentH : 0) / PAGE_SLICE_PX);
+    const innerHUnit =
+      mode === "reading" && compareSplit && !isPdfReading
+        ? readingPageLayoutPx(readingZoomCompareRight).innerH
+        : PAGE_INNER_H_PX;
+    const rawPages = Math.ceil(
+      (Number.isFinite(contentH) ? contentH : 0) / innerHUnit
+    );
     const pages = Math.min(500, Math.max(1, rawPages));
     setPageCount(pages);
     if (mode === "reading" && !isPdfReading) {
       personalizedHtmlRef.current = el.innerHTML;
     }
-  }, [mode, isPdfReading]);
+  }, [mode, isPdfReading, compareSplit, readingZoomCompareRight]);
 
   const runTurkishSpell = useCallback(() => {
     const ed = editorRef.current;
@@ -694,22 +921,38 @@ export default function WordLikeWorkbench({
     const el = editorRef.current;
     if (!el || !upp) return;
 
-    const snap = personalizedHtmlRef.current;
-    const snapOk = snap && stripHtmlToPlainText(snap).trim().length > 0;
-
-    if (snapOk) {
-      el.innerHTML = snap;
-    } else if (colorizePlainOnLoad && mode === "reading") {
-      el.innerHTML = plainTextToUppHighlightHtml(initialBody || "", upp);
-      personalizedHtmlRef.current = el.innerHTML;
-    } else if (isProbablyHtml(initialBody)) {
-      el.innerHTML = initialBody || "<p><br></p>";
-      personalizedHtmlRef.current = el.innerHTML;
-    } else if (initialBody?.trim()) {
-      el.innerHTML = plainTextToUppHighlightHtml(initialBody, upp);
+    /**
+     * Karşılaştırma layout'una geçince editorRef yeni bir düğüme bağlanır; innerHTML boş
+     * olur. İçeriği her zaman ref / initialBody üzerinden yeniden kur.
+     */
+    if (compareSplit) {
+      if (isProbablyHtml(initialBody)) {
+        const snap = personalizedHtmlRef.current;
+        const snapOk =
+          typeof snap === "string" &&
+          stripHtmlToPlainText(snap).trim().length > 0;
+        el.innerHTML = snapOk ? snap : initialBody || "<p><br></p>";
+      } else {
+        const plainFromEl = stripHtmlToPlainText(el.innerHTML).trim();
+        const plainFromSnap = stripHtmlToPlainText(
+          personalizedHtmlRef.current || ""
+        ).trim();
+        const plainFromInitial = stripHtmlToPlainText(
+          initialBody || ""
+        ).trim();
+        const plain = plainFromEl || plainFromSnap || plainFromInitial;
+        el.innerHTML = plain
+          ? plainTextToUppHighlightHtml(plain, upp)
+          : "<p><br></p>";
+      }
       personalizedHtmlRef.current = el.innerHTML;
     } else {
-      el.innerHTML = "<p><br></p>";
+      if (!isProbablyHtml(initialBody)) {
+        const plain = stripHtmlToPlainText(el.innerHTML);
+        el.innerHTML = plain.trim()
+          ? plainTextToUppHighlightHtml(plain, upp)
+          : "<p><br></p>";
+      }
       personalizedHtmlRef.current = el.innerHTML;
     }
 
@@ -717,18 +960,47 @@ export default function WordLikeWorkbench({
     applyToolbarDocumentStyles();
     syncStats();
     queueMicrotask(() => runTurkishSpell());
+    queueMicrotask(() => {
+      if (!compareSplit) return;
+      if (isPdfReading) {
+        const o = compareOriginalScrollRef.current;
+        const p = scrollAreaRef.current;
+        if (o) o.scrollTop = 0;
+        if (p) p.scrollTop = 0;
+      } else {
+        const p = scrollAreaRef.current;
+        if (p) p.scrollTop = 0;
+      }
+      setCurrentPageCompareLeft(1);
+      setCurrentPage(1);
+    });
   }, [
     compareSplit,
     isPdfReading,
     mode,
     initialBody,
-    colorizePlainOnLoad,
     upp,
     applyUppTypography,
     applyToolbarDocumentStyles,
     syncStats,
     runTurkishSpell,
   ]);
+
+  useLayoutEffect(() => {
+    if (!compareSplit || isPdfReading || mode !== "reading") {
+      setCompareOriginalPageCount(1);
+      return;
+    }
+    const el = compareOriginalContentRef.current;
+    if (!el) return;
+    const h = el.scrollHeight;
+    const zLayout = readingPageLayoutPx(readingZoomCompareLeft);
+    const pages = Math.min(
+      500,
+      Math.max(1, Math.ceil(h / zLayout.innerH))
+    );
+    setCompareOriginalPageCount(pages);
+  }, [compareSplit, compareLeftMarkup, readingZoomCompareLeft, isPdfReading, mode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -803,6 +1075,7 @@ export default function WordLikeWorkbench({
     if (!el) return;
     if (!stripHtmlToPlainText(el.innerHTML).trim()) return;
     unwrapTurkishSpellMarks(el);
+    clearLexiPageNudgeMarks(el);
     const html = el.innerHTML;
 
     if (mode === "reading" && documentId) {
@@ -851,13 +1124,35 @@ export default function WordLikeWorkbench({
   const updateCurrentPageFromScroll = useCallback(() => {
     const sc = scrollAreaRef.current;
     if (!sc) return;
-    const st = sc.scrollTop;
-    const cp = Math.min(
-      pageCount,
-      Math.max(1, Math.floor(st / PAGE_SLICE_PX) + 1)
-    );
-    setCurrentPage(cp);
+    setCurrentPage(pageIndexFromScrollRatio(sc, pageCount));
   }, [pageCount]);
+
+  const refreshComparePageIndicators = useCallback(() => {
+    if (isPdfReading) {
+      const o = compareOriginalScrollRef.current;
+      const p = scrollAreaRef.current;
+      if (o)
+        setCurrentPageCompareLeft(
+          pageIndexFromScrollRatio(o, compareOriginalPageCount)
+        );
+      if (p) setCurrentPage(pageIndexFromScrollRatio(p, pageCount));
+      return;
+    }
+    const sc = scrollAreaRef.current;
+    if (!sc) return;
+    setCurrentPageCompareLeft(
+      pageIndexFromScrollRatio(sc, compareOriginalPageCount)
+    );
+    setCurrentPage(pageIndexFromScrollRatio(sc, pageCount));
+  }, [isPdfReading, compareOriginalPageCount, pageCount]);
+
+  const handleScrollAreaScroll = useCallback(() => {
+    if (mode === "reading" && compareSplit) {
+      refreshComparePageIndicators();
+    } else {
+      updateCurrentPageFromScroll();
+    }
+  }, [mode, compareSplit, refreshComparePageIndicators, updateCurrentPageFromScroll]);
 
   useEffect(() => {
     if (isPdfReading) return;
@@ -865,23 +1160,52 @@ export default function WordLikeWorkbench({
     if (!el) return;
     const obs = new ResizeObserver(() => {
       syncStats();
-      updateCurrentPageFromScroll();
+      if (mode === "reading" && compareSplit) {
+        refreshComparePageIndicators();
+      } else {
+        updateCurrentPageFromScroll();
+      }
     });
     obs.observe(el);
     return () => obs.disconnect();
-  }, [syncStats, updateCurrentPageFromScroll, isPdfReading]);
+  }, [
+    syncStats,
+    updateCurrentPageFromScroll,
+    refreshComparePageIndicators,
+    mode,
+    compareSplit,
+    isPdfReading,
+  ]);
 
   const pageNumbers = Array.from({ length: pageCount }, (_, i) => i + 1);
+  const editorMaskFlowHeightPx = editorContentFlowHeightPx(pageCount);
   const editorMask = immersiveReading
     ? undefined
     : editorPageMaskImage(pageCount);
+
+  const cmpChromeLeft = readingComparePageChrome(htmlCompareLayoutLeft);
+  const cmpChromeRight = readingComparePageChrome(htmlCompareLayoutRight);
+  const cmpOrigEditorStyle = readingCompareEditorSurfaceStyles(
+    htmlCompareLayoutLeft,
+    compareOriginalPageCount,
+    {
+      fontFamily: COMPARE_REF_FONT_FAMILY,
+      letterSpacing: 0,
+      color: "#1c1917",
+    }
+  );
+  const cmpPersEditorStyle = readingCompareEditorSurfaceStyles(
+    htmlCompareLayoutRight,
+    pageCount,
+    isRichReadingHtml ? {} : { color: "#1c1917" }
+  );
 
   return (
     <div
       className={
         immersiveReading
-          ? "fixed inset-0 z-[120] flex min-h-0 flex-col"
-          : "flex min-h-[calc(100dvh-3.5rem)] flex-col bg-stone-400"
+          ? "fixed inset-0 z-[120] flex min-h-0 min-w-0 flex-col"
+          : "flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden bg-stone-400"
       }
       style={
         immersiveReading ? { backgroundColor: uppBackgroundColor } : undefined
@@ -1128,7 +1452,8 @@ export default function WordLikeWorkbench({
       ) : null}
 
       {mode === "reading" && compareSplit && !immersiveReading ? (
-        <div className="flex min-h-0 flex-1 flex-row gap-2 overflow-hidden px-0.5 pt-40 pb-32 sm:pt-36 sm:pb-36 max-sm:min-h-0 max-sm:flex-col max-sm:overflow-y-auto">
+        isPdfReading ? (
+        <div className="flex min-h-0 flex-1 flex-row gap-2 overflow-hidden px-0.5 pt-40 pb-14 sm:pt-36 max-sm:min-h-0 max-sm:flex-col max-sm:overflow-y-auto">
           <section
             className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden rounded-xl border-2 border-stone-400 bg-stone-200 shadow-md max-sm:max-h-[48dvh] max-sm:flex-none"
             aria-label="Orijinal belge"
@@ -1136,8 +1461,12 @@ export default function WordLikeWorkbench({
             <h2 className="shrink-0 border-b border-stone-400 bg-stone-300 px-3 py-2 text-center text-xs font-bold uppercase tracking-wide text-stone-800">
               Orijinal
             </h2>
-            <div className="min-h-0 flex-1 overflow-y-auto bg-white">
-              {isPdfReading && pdfFileBytes ? (
+            <div
+              ref={compareOriginalScrollRef}
+              className="min-h-0 flex-1 overflow-y-auto bg-white"
+              onScroll={refreshComparePageIndicators}
+            >
+              {pdfFileBytes ? (
                 <div className="p-3">
                   <PdfReadingWorkbench
                     fileBytes={pdfFileBytes}
@@ -1148,21 +1477,9 @@ export default function WordLikeWorkbench({
                   />
                 </div>
               ) : (
-                <div className="p-3">
-                  <ReadingZoomWrap zoom={readingZoomCompareLeft} className="compare-original-pane">
-                    <div
-                      className="word-editor-surface word-editor-surface--rich select-text rounded-lg text-stone-900 outline-none"
-                      style={{
-                        fontFamily:
-                          'Times New Roman, Times, "Liberation Serif", serif',
-                        letterSpacing: 0,
-                        background: "#ffffff",
-                        color: "#1c1917",
-                      }}
-                      dangerouslySetInnerHTML={{ __html: compareLeftMarkup }}
-                    />
-                  </ReadingZoomWrap>
-                </div>
+                <p className="text-sm text-red-800" role="alert">
+                  PDF açılamadı veya kayıt bozuk.
+                </p>
               )}
             </div>
           </section>
@@ -1174,42 +1491,18 @@ export default function WordLikeWorkbench({
             <h2 className="shrink-0 border-b border-emerald-600/40 bg-emerald-200/80 px-3 py-2 text-center text-xs font-bold uppercase tracking-wide text-emerald-950">
               Profilinize göre
             </h2>
-            <div
-              ref={scrollAreaRef}
-              className="min-h-0 flex-1 overflow-y-auto"
-              style={{
-                backgroundColor: isPdfReading ? uppBackgroundColor : undefined,
-              }}
-              onScroll={updateCurrentPageFromScroll}
-            >
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <div
-                className={
-                  isPdfReading
-                    ? "p-3"
-                    : "mx-auto flex min-h-full w-full max-w-[calc(210mm+4rem)] justify-center px-2 py-4 sm:px-4"
-                }
+                ref={scrollAreaRef}
+                className="min-h-0 flex-1 overflow-y-auto"
+                style={{
+                  backgroundColor: uppBackgroundColor,
+                }}
+                onScroll={handleScrollAreaScroll}
               >
-                <div
-                  className={
-                    isPdfReading
-                      ? "relative w-full max-w-full"
-                      : "relative w-full max-w-full shrink-0 bg-white shadow-[0_4px_24px_rgba(0,0,0,0.18)]"
-                  }
-                  style={
-                    isPdfReading
-                      ? undefined
-                      : {
-                          width: mm(A4_MM_W),
-                          minHeight: mm(A4_MM_H),
-                          maxWidth: "100%",
-                          boxSizing: "border-box",
-                          padding: `${mm(25)} ${mm(25)} ${mm(20)} ${mm(30)}`,
-                          backgroundColor: uppBackgroundColor,
-                        }
-                  }
-                >
-                  {isPdfReading ? (
-                    pdfFileBytes ? (
+                <div className="p-3">
+                  <div className="relative w-full max-w-full">
+                    {pdfFileBytes ? (
                       <PdfReadingWorkbench
                         fileBytes={pdfFileBytes}
                         upp={upp}
@@ -1222,142 +1515,198 @@ export default function WordLikeWorkbench({
                       <p className="text-sm text-red-800" role="alert">
                         PDF açılamadı veya kayıt bozuk.
                       </p>
-                    )
-                  ) : (
-                    <ReadingZoomWrap zoom={readingZoomCompareRight}>
-                      <>
-                        {pageCount > 1
-                          ? Array.from({ length: pageCount - 1 }, (_, i) => (
-                              <div
-                                key={`cmp-page-gap-${i}`}
-                                aria-hidden
-                                className="pointer-events-none absolute right-0 left-0 z-[1] bg-stone-400"
-                                style={{
-                                  top: `calc(${mm(25)} + ${(i + 1) * PAGE_SLICE_PX - PAGE_VISUAL_GAP_PX}px)`,
-                                  height: PAGE_VISUAL_GAP_PX,
-                                }}
-                              />
-                            ))
-                          : null}
-                        <div
-                          ref={editorRef}
-                          contentEditable
-                          suppressContentEditableWarning
-                          role="textbox"
-                          aria-multiline
-                          aria-label="Kişiselleştirilmiş belge metni"
-                          lang="tr"
-                          spellCheck={false}
-                          onInput={() => {
-                            syncStats();
-                            refreshFormatState();
-                            scheduleTurkishSpell();
-                          }}
-                          className={`word-editor-surface relative z-[2] w-full max-w-full bg-transparent text-stone-900 outline-none ${
-                            isRichReadingHtml ? "word-editor-surface--rich " : ""
-                          } min-h-[calc(297mm-45mm)]`}
-                          style={{
-                            ...(isRichReadingHtml ? {} : { color: "#1c1917" }),
-                            ...(editorMask
-                              ? {
-                                  WebkitMaskImage: editorMask,
-                                  WebkitMaskRepeat: "no-repeat",
-                                  WebkitMaskSize: `100% ${pageCount * PAGE_SLICE_PX}px`,
-                                  maskImage: editorMask,
-                                  maskRepeat: "no-repeat",
-                                  maskSize: `100% ${pageCount * PAGE_SLICE_PX}px`,
-                                }
-                              : {}),
-                          }}
-                        />
-                        {pageCount > 1
-                          ? Array.from({ length: pageCount - 1 }, (_, i) => (
-                              <div
-                                key={`cmp-tail-${i}`}
-                                aria-hidden
-                                className="pointer-events-none absolute right-0 left-0 z-[3] bg-white"
-                                style={{
-                                  top: `calc(${mm(25)} + ${(i + 1) * PAGE_SLICE_PX - PAGE_VISUAL_GAP_PX - PAGE_BREAK_MARGIN_PX}px)`,
-                                  height: PAGE_BREAK_MARGIN_PX,
-                                }}
-                              />
-                            ))
-                          : null}
-                      </>
-                    </ReadingZoomWrap>
-                  )}
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           </section>
         </div>
-      ) : (
-        <div
-          ref={scrollAreaRef}
-          className={
-            immersiveReading
-              ? `flex min-h-0 flex-1 overflow-y-auto px-5 pt-16 sm:px-12 sm:pt-20 md:px-20 md:py-12 lg:px-28 lg:py-16 ${mode === "reading" ? "pb-24" : "pb-10"}`
-              : `flex flex-1 overflow-y-auto pt-40 sm:pt-36 ${mode === "reading" && !immersiveReading ? "pb-32 sm:pb-36" : "pb-10"}`
-          }
-          onScroll={updateCurrentPageFromScroll}
-        >
+        ) : (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-0.5 pb-14 pt-40 sm:pt-36">
           <div
+            ref={scrollAreaRef}
+            onScroll={handleScrollAreaScroll}
+            className="flex min-h-0 min-w-0 flex-1 flex-col items-center overflow-y-auto overflow-x-hidden bg-stone-400"
+          >
+            <div className="flex min-h-min w-full flex-col gap-2 px-0.5 py-1 sm:flex-row sm:items-start sm:gap-2">
+              <section
+                className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden rounded-xl border-2 border-stone-400 bg-stone-200 shadow-md sm:basis-0"
+                aria-label="Orijinal belge"
+              >
+                <h2 className="sticky top-0 z-10 shrink-0 border-b border-stone-400 bg-stone-300 px-3 py-2 text-center text-xs font-bold uppercase tracking-wide text-stone-800">
+                  Orijinal
+                </h2>
+                <div className="bg-stone-400">
+                  <div className="lexi-compare-page-column mx-auto w-full max-w-[calc(210mm+2rem)] px-1 py-2 sm:px-2">
+                    <div
+                      className="relative shrink-0"
+                      style={cmpChromeLeft.sheetOuter}
+                    >
+                      <div className="compare-original-pane w-full max-w-full">
+                        <div
+                          className="relative mx-auto"
+                          style={cmpChromeLeft.pageRoot}
+                        >
+                          <ReadingPageStackBackground
+                            pageCount={sheetPageCount}
+                            layout={htmlCompareLayoutLeft}
+                          />
+                          <div
+                            className="relative z-[5]"
+                            style={cmpChromeLeft.contentPad}
+                          >
+                            <div
+                              ref={compareOriginalContentRef}
+                              className="word-editor-surface word-editor-surface--rich word-editor-surface--compare-paged relative z-[6] w-full max-w-full bg-transparent select-text text-stone-900 outline-none"
+                              style={cmpOrigEditorStyle}
+                              dangerouslySetInnerHTML={{ __html: compareLeftMarkup }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section
+                className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden rounded-xl border-2 border-emerald-700/50 bg-emerald-100/40 shadow-md sm:basis-0"
+                aria-label="Kişiselleştirilmiş belge"
+              >
+                <h2 className="sticky top-0 z-10 shrink-0 border-b border-emerald-600/40 bg-emerald-200/80 px-3 py-2 text-center text-xs font-bold uppercase tracking-wide text-emerald-950">
+                  Profilinize göre
+                </h2>
+                <div className="bg-stone-400">
+                  <div className="lexi-compare-page-column mx-auto w-full max-w-[calc(210mm+2rem)] px-1 py-2 sm:px-2">
+                    <div
+                      className="relative shrink-0"
+                      style={cmpChromeRight.sheetOuter}
+                    >
+                      <div className="w-full max-w-full">
+                        <div
+                          className="relative mx-auto"
+                          style={cmpChromeRight.pageRoot}
+                        >
+                          <ReadingPageStackBackground
+                            pageCount={sheetPageCount}
+                            layout={htmlCompareLayoutRight}
+                          />
+                          <div
+                            className="relative z-[5]"
+                            style={cmpChromeRight.contentPad}
+                          >
+                            <div
+                              className="min-w-0"
+                              style={{
+                                fontSize: `${16 * COMPARE_PERSONALIZED_FONT_TO_ORIGINAL}px`,
+                              }}
+                            >
+                              <div
+                                ref={editorRef}
+                                contentEditable
+                                suppressContentEditableWarning
+                                role="textbox"
+                                aria-multiline
+                                aria-label="Kişiselleştirilmiş belge metni"
+                                lang="tr"
+                                spellCheck={false}
+                                onInput={() => {
+                                  syncStats();
+                                  refreshFormatState();
+                                  scheduleTurkishSpell();
+                                }}
+                                className={`word-editor-surface relative z-[6] w-full max-w-full bg-transparent text-stone-900 outline-none ${
+                                  isRichReadingHtml ||
+                                  (mode === "reading" &&
+                                    compareSplit &&
+                                    !isPdfReading)
+                                    ? "word-editor-surface--rich word-editor-surface--rich-inherit word-editor-surface--compare-paged "
+                                    : ""
+                                }`}
+                                style={cmpPersEditorStyle}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+        )
+      ) : (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pb-14">
+          <div
+            ref={scrollAreaRef}
             className={
               immersiveReading
-                ? "mx-auto flex min-h-full w-full max-w-3xl flex-1 flex-col justify-start lg:max-w-4xl"
-                : "mx-auto flex min-h-full w-full max-w-[calc(210mm+4rem)] justify-center gap-1 px-2 py-6 sm:gap-3 sm:px-6"
+                ? "min-h-0 flex-1 overflow-y-auto px-5 pb-3 pt-16 sm:px-12 sm:pt-20 md:px-20 md:py-12 lg:px-28 lg:py-16"
+                : isPdfReading
+                  ? "min-h-0 flex-1 overflow-y-auto pt-40 sm:pt-36"
+                  : "min-h-0 flex-1 overflow-y-auto bg-stone-400 pt-40 sm:pt-36"
             }
+            onScroll={handleScrollAreaScroll}
           >
-            {!immersiveReading && !isPdfReading ? (
-              <aside
-                className="flex w-7 shrink-0 flex-col items-end pt-2 text-xs font-medium text-stone-700 sm:w-9"
-                aria-label="Sayfa numaraları"
-              >
-                {pageNumbers.map((n) => (
-                  <div
-                    key={n}
-                    className="flex w-full items-start justify-end border-r border-transparent pr-1"
-                    style={{ minHeight: PAGE_SLICE_PX, paddingTop: 6 }}
-                  >
-                    <span className="tabular-nums">{n}</span>
-                  </div>
-                ))}
-              </aside>
-            ) : null}
-
             <div
               className={
                 immersiveReading
-                  ? "relative w-full shrink-0 bg-transparent shadow-none"
-                  : isPdfReading
-                    ? "relative w-full max-w-full shrink-0 bg-white shadow-[0_4px_24px_rgba(0,0,0,0.12)]"
-                    : "relative shrink-0 bg-white shadow-[0_4px_24px_rgba(0,0,0,0.18)]"
-              }
-              style={
-                immersiveReading
-                  ? {
-                      boxSizing: "border-box",
-                      minHeight: "min-content",
-                      padding: isPdfReading ? "0.25rem 0" : "0.5rem 0",
-                    }
-                  : isPdfReading
-                    ? {
-                        width: "100%",
-                        maxWidth: "100%",
-                        boxSizing: "border-box",
-                        padding: `${mm(12)} ${mm(14)} ${mm(16)}`,
-                      }
-                    : {
-                        width: mm(A4_MM_W),
-                        minHeight: mm(A4_MM_H),
-                        maxWidth: "100%",
-                        boxSizing: "border-box",
-                        padding: `${mm(25)} ${mm(25)} ${mm(20)} ${mm(30)}`,
-                      }
+                  ? "mx-auto flex min-h-full w-full max-w-3xl flex-1 flex-col justify-start pb-2 lg:max-w-4xl"
+                  : "mx-auto flex min-h-full w-full max-w-[calc(210mm+2rem)] justify-center gap-1 px-1 py-2 pb-3 sm:gap-2 sm:px-3"
               }
             >
-              {isPdfReading ? (
-                pdfFileBytes ? (
+              {!immersiveReading && !isPdfReading ? (
+                <aside
+                  className="flex w-7 shrink-0 flex-col items-end pt-2 text-xs font-medium text-stone-700 sm:w-9"
+                  aria-label="Sayfa numaraları"
+                >
+                  {pageNumbers.map((n) => (
+                    <div
+                      key={n}
+                      className="flex w-full items-start justify-end border-r border-transparent pr-1"
+                      style={{ minHeight: PAGE_STACK_STRIDE_PX, paddingTop: 6 }}
+                    >
+                      <span className="tabular-nums">{n}</span>
+                    </div>
+                  ))}
+                </aside>
+              ) : null}
+
+              <div className="flex min-w-0 flex-1 flex-col">
+                <div
+                  className={
+                    immersiveReading
+                      ? "relative w-full shrink-0 bg-transparent shadow-none"
+                      : isPdfReading
+                        ? "relative w-full max-w-full shrink-0 bg-white shadow-[0_4px_24px_rgba(0,0,0,0.12)]"
+                        : "relative shrink-0"
+                  }
+                  style={
+                    immersiveReading
+                      ? {
+                          boxSizing: "border-box",
+                          minHeight: "min-content",
+                          padding: isPdfReading ? "0.25rem 0" : "0.5rem 0",
+                        }
+                      : isPdfReading
+                        ? {
+                            width: "100%",
+                            maxWidth: "100%",
+                            boxSizing: "border-box",
+                            padding: `${mm(12)} ${mm(14)} ${mm(16)}`,
+                          }
+                        : {
+                            width: mm(A4_MM_W),
+                            maxWidth: "100%",
+                            boxSizing: "border-box",
+                          }
+                  }
+                >
+                {isPdfReading ? (
+                  pdfFileBytes ? (
                   <PdfReadingWorkbench
                     fileBytes={pdfFileBytes}
                     upp={upp}
@@ -1366,228 +1715,196 @@ export default function WordLikeWorkbench({
                     variant="personalized"
                     scale={pdfScaleSingle}
                   />
+                  ) : (
+                    <p className="text-sm text-red-800" role="alert">
+                      PDF açılamadı veya kayıt bozuk.
+                    </p>
+                  )
                 ) : (
-                  <p className="text-sm text-red-800" role="alert">
-                    PDF açılamadı veya kayıt bozuk.
-                  </p>
-                )
-              ) : mode === "reading" ? (
-                <ReadingZoomWrap zoom={readingZoomSingle}>
-                  <>
-                    {!immersiveReading && pageCount > 1
-                      ? Array.from({ length: pageCount - 1 }, (_, i) => (
-                          <div
-                            key={`page-gap-${i}`}
-                            aria-hidden
-                            className="pointer-events-none absolute right-0 left-0 z-[1] bg-stone-400"
-                            style={{
-                              top: `calc(${mm(25)} + ${(i + 1) * PAGE_SLICE_PX - PAGE_VISUAL_GAP_PX}px)`,
-                              height: PAGE_VISUAL_GAP_PX,
-                            }}
-                          />
-                        ))
-                      : null}
+                <ReadingZoomWrap
+                  zoom={
+                    mode === "writing" ? writingZoom : readingZoomSingle
+                  }
+                >
+                  <div
+                    className={
+                      immersiveReading
+                        ? "relative w-full"
+                        : "relative mx-auto"
+                    }
+                    style={
+                      immersiveReading
+                        ? undefined
+                        : { width: mm(A4_MM_W) }
+                    }
+                  >
+                    {!immersiveReading ? (
+                      <ReadingPageStackBackground pageCount={pageCount} />
+                    ) : null}
+                    <div
+                      className="relative z-[5]"
+                      style={
+                        immersiveReading
+                          ? undefined
+                          : {
+                              padding: `${mm(PAGE_MARGIN_TOP_MM)} ${mm(PAGE_MARGIN_LR_MM)}`,
+                            }
+                      }
+                    >
                     <div
                       ref={editorRef}
-                      contentEditable={!immersiveReading}
+                      contentEditable={
+                        mode === "writing" || !immersiveReading
+                      }
                       suppressContentEditableWarning
-                      role={immersiveReading ? "document" : "textbox"}
-                      aria-multiline={!immersiveReading}
-                      aria-readonly={immersiveReading}
+                      role={
+                        immersiveReading && mode === "reading"
+                          ? "document"
+                          : "textbox"
+                      }
+                      aria-multiline={
+                        !(immersiveReading && mode === "reading")
+                      }
+                      aria-readonly={
+                        immersiveReading && mode === "reading"
+                      }
                       aria-label={
-                        immersiveReading
+                        immersiveReading && mode === "reading"
                           ? "Okuma metni (salt okunur)"
                           : "Belge metni"
                       }
                       lang="tr"
                       spellCheck={false}
                       onInput={
-                        immersiveReading
-                          ? undefined
-                          : () => {
+                        mode === "writing" || !immersiveReading
+                          ? () => {
                               syncStats();
                               refreshFormatState();
                               scheduleTurkishSpell();
                             }
+                          : undefined
                       }
-                      className={`word-editor-surface relative z-[2] w-full max-w-full bg-transparent text-stone-900 outline-none ${
+                      className={`word-editor-surface relative z-[6] w-full max-w-full bg-transparent text-stone-900 outline-none ${
                         isRichReadingHtml ? "word-editor-surface--rich " : ""
                       }${
                         immersiveReading
                           ? "min-h-[50vh] select-text"
-                          : "min-h-[calc(297mm-45mm)]"
+                          : ""
                       }`}
                       style={{
                         ...(isRichReadingHtml ? {} : { color: "#1c1917" }),
+                        ...(!immersiveReading
+                          ? {
+                              maxWidth: `${PAGE_INNER_W_PX}px`,
+                              marginLeft: "auto",
+                              marginRight: "auto",
+                              minHeight: PAGE_INNER_H_PX,
+                            }
+                          : {}),
                         ...(editorMask
                           ? {
                               WebkitMaskImage: editorMask,
                               WebkitMaskRepeat: "no-repeat",
-                              WebkitMaskSize: `100% ${pageCount * PAGE_SLICE_PX}px`,
+                              WebkitMaskSize: `100% ${editorMaskFlowHeightPx}px`,
                               maskImage: editorMask,
                               maskRepeat: "no-repeat",
-                              maskSize: `100% ${pageCount * PAGE_SLICE_PX}px`,
+                              maskSize: `100% ${editorMaskFlowHeightPx}px`,
                             }
                           : {}),
                       }}
                     />
-                    {!immersiveReading && pageCount > 1
-                      ? Array.from({ length: pageCount - 1 }, (_, i) => (
-                          <div
-                            key={`page-tail-margin-${i}`}
-                            aria-hidden
-                            className="pointer-events-none absolute right-0 left-0 z-[3] bg-white"
-                            style={{
-                              top: `calc(${mm(25)} + ${(i + 1) * PAGE_SLICE_PX - PAGE_VISUAL_GAP_PX - PAGE_BREAK_MARGIN_PX}px)`,
-                              height: PAGE_BREAK_MARGIN_PX,
-                            }}
-                          />
-                        ))
-                      : null}
-                  </>
+                    </div>
+                  </div>
                 </ReadingZoomWrap>
-              ) : (
-                <>
-                  {!immersiveReading && pageCount > 1
-                    ? Array.from({ length: pageCount - 1 }, (_, i) => (
-                        <div
-                          key={`page-gap-${i}`}
-                          aria-hidden
-                          className="pointer-events-none absolute right-0 left-0 z-[1] bg-stone-400"
-                          style={{
-                            top: `calc(${mm(25)} + ${(i + 1) * PAGE_SLICE_PX - PAGE_VISUAL_GAP_PX}px)`,
-                            height: PAGE_VISUAL_GAP_PX,
-                          }}
-                        />
-                      ))
-                    : null}
-                  <div
-                    ref={editorRef}
-                    contentEditable={!immersiveReading}
-                    suppressContentEditableWarning
-                    role={immersiveReading ? "document" : "textbox"}
-                    aria-multiline={!immersiveReading}
-                    aria-readonly={immersiveReading}
-                    aria-label={
-                      immersiveReading
-                        ? "Okuma metni (salt okunur)"
-                        : "Belge metni"
-                    }
-                    lang="tr"
-                    spellCheck={false}
-                    onInput={
-                      immersiveReading
-                        ? undefined
-                        : () => {
-                            syncStats();
-                            refreshFormatState();
-                            scheduleTurkishSpell();
-                          }
-                    }
-                    className={`word-editor-surface relative z-[2] w-full max-w-full bg-transparent text-stone-900 outline-none ${
-                      isRichReadingHtml ? "word-editor-surface--rich " : ""
-                    }${
-                      immersiveReading
-                        ? "min-h-[50vh] select-text"
-                        : "min-h-[calc(297mm-45mm)]"
-                    }`}
-                    style={{
-                      ...(isRichReadingHtml ? {} : { color: "#1c1917" }),
-                      ...(editorMask
-                        ? {
-                            WebkitMaskImage: editorMask,
-                            WebkitMaskRepeat: "no-repeat",
-                            WebkitMaskSize: `100% ${pageCount * PAGE_SLICE_PX}px`,
-                            maskImage: editorMask,
-                            maskRepeat: "no-repeat",
-                            maskSize: `100% ${pageCount * PAGE_SLICE_PX}px`,
-                          }
-                        : {}),
-                    }}
-                  />
-                  {!immersiveReading && pageCount > 1
-                    ? Array.from({ length: pageCount - 1 }, (_, i) => (
-                        <div
-                          key={`page-tail-margin-${i}`}
-                          aria-hidden
-                          className="pointer-events-none absolute right-0 left-0 z-[3] bg-white"
-                          style={{
-                            top: `calc(${mm(25)} + ${(i + 1) * PAGE_SLICE_PX - PAGE_VISUAL_GAP_PX - PAGE_BREAK_MARGIN_PX}px)`,
-                            height: PAGE_BREAK_MARGIN_PX,
-                          }}
-                        />
-                      ))
-                    : null}
-                </>
-              )}
+                )}
+              </div>
             </div>
+          </div>
           </div>
         </div>
       )}
 
-      {mode === "reading" && !immersiveReading ? (
-        <div
-          role="region"
-          aria-label="Görünüm yakınlaştırma"
-          className="fixed bottom-9 left-0 right-0 z-[54] flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-stone-400 bg-stone-200/95 px-3 py-2 shadow-[0_-4px_12px_rgba(0,0,0,0.06)] backdrop-blur-sm supports-[backdrop-filter]:bg-stone-200/85"
-        >
-          {compareSplit ? (
-            <>
-              <ReadingZoomSlider
-                label="Orijinal"
-                value={readingZoomCompareLeft}
-                onChange={setReadingZoomCompareLeft}
-                id="lexi-zoom-compare-left"
-              />
-              <ReadingZoomSlider
-                label="Profil"
-                value={readingZoomCompareRight}
-                onChange={setReadingZoomCompareRight}
-                id="lexi-zoom-compare-right"
-              />
-            </>
-          ) : (
-            <ReadingZoomSlider
-              label="Görünüm"
-              value={readingZoomSingle}
-              onChange={setReadingZoomSingle}
-              id="lexi-zoom-single"
-            />
-          )}
-        </div>
-      ) : null}
-
-      {immersiveReading && mode === "reading" ? (
-        <div
-          role="region"
-          aria-label="Yakınlaştırma"
-          className="fixed bottom-4 left-1/2 z-[130] w-[min(94vw,28rem)] -translate-x-1/2 rounded-xl border border-stone-400/80 bg-white/95 px-3 py-2 shadow-lg backdrop-blur-sm"
-        >
-          <ReadingZoomSlider
-            label="Boyut"
-            value={readingZoomSingle}
-            onChange={setReadingZoomSingle}
-            id="lexi-zoom-immersive"
-          />
-        </div>
-      ) : null}
-
       {!immersiveReading ? (
-        <footer className="fixed bottom-0 left-0 right-0 z-[55] flex h-9 items-center justify-between gap-3 border-t border-stone-500 bg-stone-700 px-3 text-xs text-stone-100 sm:text-sm">
-          <span className="tabular-nums">
+        <footer
+          className="fixed bottom-0 left-0 right-0 z-[60] grid min-h-10 w-full grid-cols-1 items-center gap-y-1 border-t border-stone-500 bg-stone-700 px-2 py-1 text-xs text-stone-100 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-x-2 sm:px-3 sm:text-sm"
+          style={{
+            paddingBottom: "max(0.125rem, env(safe-area-inset-bottom, 0px))",
+          }}
+        >
+          <span className="hidden min-w-0 truncate tabular-nums sm:block">
             {isPdfReading
               ? `PDF · ${pdfPageTotal} sayfa`
               : `Kelime: ${wordCount} · Karakter: ${charCount}`}
           </span>
-          <span className="tabular-nums">
-            {isPdfReading ? "—" : `Sayfa ${currentPage} / ${pageCount}`}
-          </span>
-          <Link
-            to="/"
-            className="shrink-0 text-stone-200 underline decoration-1 underline-offset-2 hover:text-white"
+          <div
+            role="region"
+            aria-label="Yakınlaştırma"
+            className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 justify-self-center sm:px-1"
           >
-            Ana sayfa
-          </Link>
+            {mode === "reading" && compareSplit ? (
+              <>
+                <ReadingZoomSlider
+                  variant="footer"
+                  label="Orijinal"
+                  value={readingZoomCompareLeft}
+                  onChange={setReadingZoomCompareLeft}
+                  id="lexi-zoom-cmp-left"
+                />
+                <ReadingZoomSlider
+                  variant="footer"
+                  label="Kişiselleştirilmiş"
+                  value={readingZoomCompareRight}
+                  onChange={setReadingZoomCompareRight}
+                  id="lexi-zoom-cmp-right"
+                />
+              </>
+            ) : mode === "reading" || mode === "writing" ? (
+              <ReadingZoomSlider
+                variant="footer"
+                label="Yakınlaştır"
+                value={mode === "writing" ? writingZoom : readingZoomSingle}
+                onChange={
+                  mode === "writing" ? setWritingZoom : setReadingZoomSingle
+                }
+                id={
+                  mode === "writing"
+                    ? "lexi-zoom-writing"
+                    : "lexi-zoom-single"
+                }
+              />
+            ) : null}
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center justify-center gap-x-3 gap-y-0.5 sm:justify-end">
+            <span className="tabular-nums sm:hidden">
+              {isPdfReading
+                ? `PDF · ${pdfPageTotal} sayfa`
+                : `Kelime: ${wordCount} · Karakter: ${charCount}`}
+            </span>
+            <span className="tabular-nums">
+              {isPdfReading ? (
+                "—"
+              ) : mode === "reading" && compareSplit && !isPdfReading ? (
+                <>
+                  <span className="hidden sm:inline">
+                    Orijinal {currentPageCompareLeft}/{compareOriginalPageCount} ·
+                    Kişisel {currentPage}/{pageCount}
+                  </span>
+                  <span className="sm:hidden">
+                    O: {currentPageCompareLeft}/{compareOriginalPageCount} · K:{" "}
+                    {currentPage}/{pageCount}
+                  </span>
+                </>
+              ) : (
+                `Sayfa ${currentPage} / ${pageCount}`
+              )}
+            </span>
+            <Link
+              to="/"
+              className="shrink-0 text-stone-200 underline decoration-1 underline-offset-2 hover:text-white"
+            >
+              Ana sayfa
+            </Link>
+          </div>
         </footer>
       ) : null}
     </div>

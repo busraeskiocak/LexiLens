@@ -51,7 +51,7 @@ export default function AppLayout() {
 
   return (
     <div
-      className={`font-sans min-h-screen ${reserveTopChrome ? "pt-14" : ""}`}
+      className={`font-sans flex min-h-screen min-w-0 flex-col ${reserveTopChrome ? "pt-14" : ""}`}
     >
       {showFixedBack ? (
         <FixedBackButton onClick={handleFixedBack} aria-label="Geri" />
@@ -68,7 +68,9 @@ export default function AppLayout() {
           <UserProfileIcon className="size-6" />
         </button>
       </div>
-      <Outlet />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <Outlet />
+      </div>
     </div>
   );
 }
