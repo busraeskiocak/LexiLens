@@ -3,7 +3,7 @@
 Disleksili öğrenciler için AI destekli kişiselleştirilmiş okuma aracı.
 
 ## 🌐 Canlı Demo
-https://lexilens.netlify.app
+https://lexilens-six.vercel.app
 
 ## 📹 Demo Video
 [Yakında eklenecek]
