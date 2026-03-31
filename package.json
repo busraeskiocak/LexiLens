@@ -13,6 +13,8 @@
   "dependencies": {
     "@fontsource/opendyslexic": "^5.2.5",
     "dictionary-tr": "^2.0.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "mammoth": "^1.12.0",
     "nspell": "^2.1.5",
     "pdfjs-dist": "5.4.296",
