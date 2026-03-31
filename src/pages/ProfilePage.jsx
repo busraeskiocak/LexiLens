@@ -566,15 +566,6 @@ export default function ProfilePage() {
         </div>
       )}
 
-      <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-        <Link
-          to="/okuma"
-          className="inline-flex flex-1 justify-center rounded-2xl bg-emerald-700 px-5 py-4 text-center text-lg font-semibold text-white shadow-md shadow-emerald-900/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-800 focus-visible:ring-offset-2"
-        >
-          Okumaya Başla
-        </Link>
-      </div>
-
       <Link
         to="/"
         className="mt-6 inline-block text-sm text-emerald-900 underline decoration-2 underline-offset-4"
