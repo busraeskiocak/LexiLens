@@ -373,20 +373,6 @@ export default function SharePage() {
               ? "Kopyalanamadı — tekrar deneyin"
               : "Bağlantıyı kopyala"}
         </button>
-        <button
-          type="button"
-          onClick={downloadProfilePdf}
-          disabled={!uppForShare || pdfState === "loading"}
-          className="mt-3 w-full rounded-xl border-2 border-emerald-800/40 bg-white px-4 py-3 text-base font-semibold text-emerald-900 disabled:border-stone-200 disabled:text-stone-400"
-        >
-          {pdfState === "loading"
-            ? "PDF hazırlanıyor..."
-            : pdfState === "ok"
-            ? "İndirildi"
-            : pdfState === "fail"
-            ? "PDF oluşturulamadı"
-            : "Profil Bilgilerini İndir"}
-        </button>
       </div>
 
       <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 text-center shadow-sm">
