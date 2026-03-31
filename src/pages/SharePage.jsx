@@ -1,10 +1,8 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { QRCodeCanvas } from "qrcode.react";
+import { QRCodeSVG } from "qrcode.react";
 import {
-  buildPaylasimShareUrl,
   decodeUppFromParam,
-  encodeUppToParam,
   looksLikeUpp,
 } from "../lib/uppShareCodec.js";
 import { getUpp, setUpp } from "../utils/storage.js";
@@ -15,10 +13,14 @@ export default function SharePage() {
   const [copyState, setCopyState] = useState("idle");
   const [saveState, setSaveState] = useState("idle");
 
-  const linkUpp = useMemo(
-    () => decodeUppFromParam(searchParams.get("d")),
-    [searchParams]
-  );
+  const linkUpp = useMemo(() => {
+    try {
+      return decodeUppFromParam(searchParams.get("d"));
+    } catch (err) {
+      console.log("[SharePage] decodeUppFromParam hatasi:", err);
+      return null;
+    }
+  }, [searchParams]);
 
   const storedUpp = getUpp();
   const uppForShare =
@@ -27,15 +29,46 @@ export default function SharePage() {
       : linkUpp && looksLikeUpp(linkUpp)
         ? linkUpp
         : null;
+  const [shareId, setShareId] = useState("");
+
+  useEffect(() => {
+    if (!uppForShare || typeof uppForShare !== "object") {
+      setShareId("");
+      return;
+    }
+    const existingId =
+      typeof uppForShare.id === "string" && uppForShare.id.trim()
+        ? uppForShare.id.trim()
+        : "";
+    if (existingId) {
+      setShareId(existingId);
+      return;
+    }
+    const generatedId = String(Date.now());
+    setShareId(generatedId);
+    setUpp({ ...uppForShare, id: generatedId });
+  }, [uppForShare]);
 
   const shareUrl = (() => {
-    if (!uppForShare) return "";
+    if (!shareId) {
+      console.log("[SharePage] shareId boş, kısa URL üretilemedi.");
+      return "";
+    }
     try {
-      return buildPaylasimShareUrl(encodeUppToParam(uppForShare));
-    } catch {
+      const origin =
+        typeof window !== "undefined" && window.location?.origin
+          ? window.location.origin
+          : "";
+      const url = `${origin}/paylasim?id=${encodeURIComponent(shareId)}`;
+      console.log("[SharePage] QR için üretilecek URL:", url);
+      return url;
+    } catch (err) {
+      console.log("[SharePage] Kısa URL üretim hatası:", err);
       return "";
     }
   })();
+  console.log("[SharePage] qrcode.react import kontrolü QRCodeSVG:", Boolean(QRCodeSVG));
+  console.log("[SharePage] QRCode value kontrolü shareUrl:", shareUrl);
 
   const showImport =
     Boolean(linkUpp && looksLikeUpp(linkUpp)) &&
@@ -90,8 +123,7 @@ export default function SharePage() {
       <main className="mx-auto max-w-lg px-5 py-12">
         <h1 className="text-2xl font-semibold text-stone-900">Profil paylaşımı</h1>
         <p className="mt-3 leading-relaxed text-stone-700">
-          Paylaşılacak bir okuma profili yok. Önce kalibrasyonu tamamlayın veya
-          geçerli bir paylaşım bağlantısı kullanın.
+          Paylaşılacak profil bulunamadı. Boş profil ile devam edebilirsiniz.
         </p>
         <Link
           to="/kalibrasyon"
@@ -165,8 +197,8 @@ export default function SharePage() {
           Telefonla taratarak aynı bağlantıya gidebilirsiniz.
         </p>
         <div className="mt-4 inline-block rounded-xl border border-stone-200 bg-white p-3">
-          {shareUrl ? (
-            <QRCodeCanvas
+          {shareUrl?.trim() ? (
+            <QRCodeSVG
               ref={qrRef}
               value={shareUrl}
               size={220}

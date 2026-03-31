@@ -4,15 +4,16 @@ import FixedBackButton from "../components/FixedBackButton.jsx";
 import DocumentKebabMenu from "../components/DocumentKebabMenu.jsx";
 import WordLikeWorkbench from "../components/WordLikeWorkbench.jsx";
 import { stripHtmlToPlainText } from "../lib/readingText.js";
-import { canBrowserGoBack } from "../utils/historyNav.js";
 import { getUpp } from "../utils/storage.js";
 import {
   getWritingDocuments,
   removeWritingDocument,
+  updateWritingDocument,
 } from "../utils/writingHistory.js";
 
 const primaryBtn =
   "rounded-2xl bg-emerald-700 px-5 py-4 text-center text-lg font-semibold text-white shadow-md shadow-emerald-900/15 outline-none ring-emerald-800 ring-offset-2 ring-offset-stone-100 transition hover:bg-emerald-800 focus-visible:ring-2 active:scale-[0.99]";
+const MODE_SELECTION_ROUTE = "/";
 
 function formatDocDate(iso) {
   try {
@@ -38,8 +39,7 @@ export default function WritingPage() {
   const upp = getUpp();
 
   const goBackOrHome = useCallback(() => {
-    if (canBrowserGoBack()) navigate(-1);
-    else navigate("/");
+    navigate(MODE_SELECTION_ROUTE);
   }, [navigate]);
 
   const [screen, setScreen] = useState(/** @type {"list" | "editor"} */ ("list"));
@@ -92,6 +92,15 @@ export default function WritingPage() {
       }
     },
     [activeWritingId, refreshDocuments]
+  );
+
+  const handleRenameWritingDoc = useCallback(
+    (id, nextTitle) => {
+      const ok = updateWritingDocument(id, { title: nextTitle });
+      if (!ok) return;
+      refreshDocuments();
+    },
+    [refreshDocuments]
   );
 
   const backToList = useCallback(() => {
@@ -195,6 +204,10 @@ export default function WritingPage() {
                   </button>
                   <DocumentKebabMenu
                     menuId={`writing-doc-menu-${doc.id}`}
+                    currentTitle={doc.title}
+                    onRename={(nextTitle) =>
+                      handleRenameWritingDoc(doc.id, nextTitle)
+                    }
                     onDelete={() => handleDeleteWritingDoc(doc.id)}
                   />
                 </div>

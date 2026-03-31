@@ -14,13 +14,14 @@
     "@fontsource/opendyslexic": "^5.2.5",
     "dictionary-tr": "^2.0.0",
     "mammoth": "^1.12.0",
-    "pdfjs-dist": "5.4.296",
     "nspell": "^2.1.5",
+    "pdfjs-dist": "5.4.296",
     "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-pdf": "^10.4.1",
-    "react-router-dom": "^7.4.0"
+    "react-router-dom": "^7.4.0",
+    "recharts": "^3.8.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.14",

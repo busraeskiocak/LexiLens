@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import FixedBackButton from "./FixedBackButton.jsx";
-import { canBrowserGoBack } from "../utils/historyNav.js";
 
 const LEXI_EMBED_TOP_CHROME = "lexi-embed-top-chrome";
+const MODE_SELECTION_ROUTE = "/";
 
 function UserProfileIcon({ className }) {
   return (
@@ -42,17 +42,16 @@ export default function AppLayout() {
     location.pathname !== "/" && location.pathname !== "/okuma";
 
   const handleFixedBack = () => {
-    if (canBrowserGoBack()) navigate(-1);
-    else navigate("/");
+    if (onProfile) {
+      navigate(-1);
+      return;
+    }
+    navigate(MODE_SELECTION_ROUTE);
   };
 
   const handleProfileIconClick = () => {
     if (onProfile) {
-      if (canBrowserGoBack()) {
-        navigate(-1);
-      } else {
-        navigate("/");
-      }
+      navigate(-1);
     } else {
       navigate("/profil");
     }

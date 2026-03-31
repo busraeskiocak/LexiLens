@@ -6,7 +6,6 @@ import ReadingMode, {
   pushReadingFileLoadError,
 } from "../components/ReadingMode.jsx";
 import LoadingSpinner from "../components/LoadingSpinner.jsx";
-import { canBrowserGoBack } from "../utils/historyNav.js";
 import mammoth from "mammoth";
 import { isProbablyHtml } from "../lib/readingText.js";
 import { applyUppHighlightsToHtmlString } from "../lib/readingHtmlPostprocess.js";
@@ -35,6 +34,7 @@ import {
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const DOCX_FAIL_MSG =
   "DOCX dosyası okunamadı, lütfen başka bir dosya deneyin";
+const MODE_SELECTION_ROUTE = "/";
 
 function formatDocDate(iso) {
   try {
@@ -58,8 +58,7 @@ export default function ReadingPage() {
   const upp = getUpp();
 
   const goBackOrHome = useCallback(() => {
-    if (canBrowserGoBack()) navigate(-1);
-    else navigate("/");
+    navigate(MODE_SELECTION_ROUTE);
   }, [navigate]);
 
   const backToReadingList = useCallback(() => setScreen("list"), []);
@@ -142,6 +141,19 @@ export default function ReadingPage() {
         setActiveDocId(null);
         setSourceText("");
         setScreen("list");
+      }
+    },
+    [activeDocId, refreshDocuments]
+  );
+
+  const handleRenameReadingDoc = useCallback(
+    (id, nextTitle) => {
+      const ok = updateReadingHistoryEntry(id, { title: nextTitle });
+      if (!ok) return;
+      refreshDocuments();
+      if (activeDocId === id) {
+        const cur = getReadingHistory().find((x) => x.id === id);
+        if (cur) setSourceText(cur.content);
       }
     },
     [activeDocId, refreshDocuments]
@@ -539,6 +551,10 @@ export default function ReadingPage() {
                 </button>
                 <DocumentKebabMenu
                   menuId={`reading-doc-menu-${doc.id}`}
+                  currentTitle={doc.title}
+                  onRename={(nextTitle) =>
+                    handleRenameReadingDoc(doc.id, nextTitle)
+                  }
                   onDelete={() => handleDeleteReadingDoc(doc.id)}
                 />
               </div>

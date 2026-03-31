@@ -7,7 +7,6 @@ import {
   useState,
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { canBrowserGoBack } from "../utils/historyNav.js";
 import {
   isProbablyHtml,
   plainTextToNeutralParagraphHtml,
@@ -261,7 +260,104 @@ function keepEditorSelection(e) {
   if (t instanceof Element) {
     if (t.closest("select")) return;
   }
-  e.preventDefault();
+}
+
+/** @param {import('react').KeyboardEvent} e */
+function handleEditorEnterKey(e) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const br1 = document.createElement("br");
+    const br2 = document.createElement("br");
+    range.insertNode(br2);
+    range.insertNode(br1);
+    range.setStartAfter(br1);
+    range.setEndAfter(br1);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const target = e.currentTarget;
+    if (target instanceof HTMLElement) {
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  }
+}
+
+const LEXI_WORD_TOKEN_RE = /[A-Za-zÇĞİIÖŞÜçğıöşü0-9]+|[^A-Za-zÇĞİIÖŞÜçğıöşü0-9]+/g;
+
+/** @param {string} s */
+function normalizeLexiWord(s) {
+  return String(s).trim().toLocaleLowerCase("tr-TR");
+}
+
+function hizalaHarf(orijinal, oneri) {
+  if (!orijinal || !oneri) return oneri;
+  if (orijinal[0] === orijinal[0].toUpperCase()) {
+    return oneri[0].toUpperCase() + oneri.slice(1);
+  }
+  return oneri[0].toLowerCase() + oneri.slice(1);
+}
+
+/** @param {HTMLElement} root */
+function clearWordDictionaryMarks(root) {
+  const marks = root.querySelectorAll("span[data-lexi-word-dict='1']");
+  for (const mark of marks) {
+    const parent = mark.parentNode;
+    if (!parent) continue;
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+    parent.removeChild(mark);
+  }
+}
+
+/**
+ * @param {HTMLElement} root
+ * @param {Map<string, string>} wrongToCorrect
+ */
+function applyWordDictionaryMarks(root, wrongToCorrect) {
+  clearWordDictionaryMarks(root);
+  if (wrongToCorrect.size === 0) return;
+
+  const doc = root.ownerDocument ?? document;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let n;
+  while ((n = walker.nextNode())) textNodes.push(/** @type {Text} */ (n));
+
+  for (const t of textNodes) {
+    const val = t.nodeValue ?? "";
+    if (!val.trim()) continue;
+    const tokens = val.match(LEXI_WORD_TOKEN_RE);
+    if (!tokens || tokens.length === 0) continue;
+
+    let changed = false;
+    const frag = doc.createDocumentFragment();
+    for (const tok of tokens) {
+      if (/^[A-Za-zÇĞİIÖŞÜçğıöşü0-9]+$/.test(tok)) {
+        const correct = wrongToCorrect.get(normalizeLexiWord(tok));
+        if (correct) {
+          const alignedCorrect = hizalaHarf(tok, correct);
+          const s = doc.createElement("span");
+          s.setAttribute("data-lexi-word-dict", "1");
+          s.setAttribute("data-lexi-correct", alignedCorrect);
+          s.style.borderBottom = "2px dotted #e67e22";
+          s.style.cursor = "pointer";
+          s.textContent = tok;
+          frag.appendChild(s);
+          changed = true;
+          continue;
+        }
+      }
+      frag.appendChild(doc.createTextNode(tok));
+    }
+
+    if (changed) t.parentNode?.replaceChild(frag, t);
+  }
+  console.log(
+    "[Lexi Dict] applyWordDictionaryMarks finished, mark count:",
+    root.querySelectorAll("span[data-lexi-word-dict='1']").length
+  );
 }
 
 /** @param {{ zoom: number, children: import("react").ReactNode, className?: string }} p */
@@ -498,8 +594,7 @@ export default function WordLikeWorkbench({
 
   const handleToolbarProfileClick = useCallback(() => {
     if (onProfilePath) {
-      if (canBrowserGoBack()) navigate(-1);
-      else navigate("/");
+      navigate("/");
     } else {
       navigate("/profil");
     }
@@ -536,6 +631,9 @@ export default function WordLikeWorkbench({
     /** @type {"left" | "center" | "right" | "justify"} */ ("left")
   );
   const [immersiveReading, setImmersiveReading] = useState(false);
+  const [readingRulerOn, setReadingRulerOn] = useState(false);
+  const [readingRulerTop, setReadingRulerTop] = useState(-9999);
+  const [readingRulerHeight, setReadingRulerHeight] = useState(24);
   const [toolbarInsetPx, setToolbarInsetPx] = useState(56);
   const [compareSplit, setCompareSplit] = useState(false);
   /** Karşılaştır toggle'ında useLayoutEffect'in yalnızca gerçek geçişte çalışması için */
@@ -554,6 +652,16 @@ export default function WordLikeWorkbench({
   const [footerHxCmpRight, setFooterHxCmpRight] = useState({ x: 0, max: 0 });
   const [cmpVxLeft, setCmpVxLeft] = useState({ top: 0, max: 0 });
   const [cmpVxRight, setCmpVxRight] = useState({ top: 0, max: 0 });
+  const [dictPopup, setDictPopup] = useState({
+    open: false,
+    wrong: "",
+    correct: "",
+    x: 0,
+    anchorTop: 0,
+    y: 0,
+  });
+  const dictPopupTargetRef = useRef(/** @type {HTMLElement | null} */ (null));
+  const dictPopupRef = useRef(/** @type {HTMLDivElement | null} */ (null));
 
   const isPdfReading = mode === "reading" && readingDocKind === "pdf";
   const readPdfSliceForDocument = useRef(
@@ -637,6 +745,27 @@ export default function WordLikeWorkbench({
       );
     };
   }, [onNavigateBack]);
+
+  useEffect(() => {
+    if (mode !== "reading" || !readingRulerOn) return undefined;
+    const onMouseMove = (e) => {
+      const target = e.target instanceof Element ? e.target : null;
+      const surface = target?.closest?.(".word-editor-surface");
+      if (!(surface instanceof HTMLElement)) return;
+      const rect = surface.getBoundingClientRect();
+      if (e.clientY < rect.top || e.clientY > rect.bottom) return;
+      const computed = window.getComputedStyle(surface);
+      const fs = Number.parseFloat(computed.fontSize) || 16;
+      const lhRaw = Number.parseFloat(computed.lineHeight);
+      const lineHeight = Number.isFinite(lhRaw) ? lhRaw : fs;
+      const localY = Math.max(0, e.clientY - rect.top);
+      const lineTop = rect.top + Math.floor(localY / lineHeight) * lineHeight;
+      setReadingRulerHeight(Math.max(10, lineHeight));
+      setReadingRulerTop(lineTop);
+    };
+    document.addEventListener("mousemove", onMouseMove, { passive: true });
+    return () => document.removeEventListener("mousemove", onMouseMove);
+  }, [mode, readingRulerOn]);
 
   useLayoutEffect(() => {
     if (immersiveReading) return undefined;
@@ -740,19 +869,51 @@ export default function WordLikeWorkbench({
   const runTurkishSpell = useCallback(() => {
     const ed = editorRef.current;
     const sp = spellRef.current;
-    if (!ed || !sp) return;
-    try {
-      const pos = getCaretTextOffset(ed);
-      applyTurkishSpellMarks(ed, sp);
-      if (pos !== null) {
-        ed.focus({ preventScroll: true });
-        setCaretTextOffset(ed, pos);
+    if (!ed) return;
+    console.log("[Lexi Dict] runTurkishSpell triggered. mode=", mode);
+    if (sp) {
+      try {
+        const pos = getCaretTextOffset(ed);
+        applyTurkishSpellMarks(ed, sp);
+        if (pos !== null) {
+          ed.focus({ preventScroll: true });
+          setCaretTextOffset(ed, pos);
+        }
+      } catch {
+        /* DOM / sözlük */
       }
-    } catch {
-      /* DOM / sözlük */
+    }
+    if (mode === "writing") {
+      console.log("[Lexi Dict] upp?.wordDictionary =", upp?.wordDictionary);
+      const rows = Array.isArray(upp?.wordDictionary) ? upp.wordDictionary : [];
+      const filteredRows = rows.filter((row) => {
+        if (!row || typeof row !== "object") return false;
+        const wrong = normalizeLexiWord(row.nasılOkudum ?? "");
+        const correct = String(row.kelime ?? "").trim();
+        return Boolean(wrong && correct);
+      });
+      console.log("[Lexi Dict] filtered rows =", filteredRows);
+      const wrongToCorrect = new Map(
+        filteredRows.map((row) => [
+          normalizeLexiWord(row.nasılOkudum ?? ""),
+          String(row.kelime ?? "").trim(),
+        ])
+      );
+      const caretPos = getCaretTextOffset(ed);
+      applyWordDictionaryMarks(ed, wrongToCorrect);
+      if (caretPos !== null) {
+        ed.focus({ preventScroll: true });
+        setCaretTextOffset(ed, caretPos);
+      }
+      console.log(
+        "[Lexi Dict] marked span count =",
+        ed.querySelectorAll("span[data-lexi-word-dict='1']").length
+      );
+    } else {
+      clearWordDictionaryMarks(ed);
     }
     syncStats();
-  }, [syncStats]);
+  }, [mode, upp, syncStats]);
 
   const scheduleTurkishSpell = useCallback(() => {
     window.clearTimeout(spellDebounceRef.current);
@@ -1020,6 +1181,59 @@ export default function WordLikeWorkbench({
     () => () => window.clearTimeout(spellDebounceRef.current),
     []
   );
+
+  useEffect(() => {
+    const onDown = (e) => {
+      if (mode !== "writing") {
+        if (dictPopup.open) setDictPopup((p) => ({ ...p, open: false }));
+        return;
+      }
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest?.("[data-lexi-dict-popup='1']")) return;
+      const mark = target?.closest?.("[data-lexi-word-dict='1']");
+      if (mark instanceof HTMLElement) {
+        const correct = mark.getAttribute("data-lexi-correct") ?? "";
+        const wrong = mark.textContent ?? "";
+        const rect = mark.getBoundingClientRect();
+        dictPopupTargetRef.current = mark;
+        setDictPopup({
+          open: true,
+          wrong,
+          correct,
+          x: rect.left + rect.width / 2,
+          anchorTop: rect.top,
+          y: rect.top,
+        });
+        return;
+      }
+      if (dictPopup.open) {
+        dictPopupTargetRef.current = null;
+        setDictPopup((p) => ({ ...p, open: false }));
+      }
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [mode, dictPopup.open]);
+
+  useLayoutEffect(() => {
+    if (!dictPopup.open) return;
+    const el = dictPopupRef.current;
+    if (!el) return;
+    const nextTop = Math.max(8, dictPopup.anchorTop - el.offsetHeight - 8);
+    if (Math.abs(nextTop - dictPopup.y) < 1) return;
+    setDictPopup((p) => ({ ...p, y: nextTop }));
+  }, [dictPopup.open, dictPopup.anchorTop, dictPopup.y, dictPopup.correct]);
+
+  const replaceDictWord = useCallback(() => {
+    const target = dictPopupTargetRef.current;
+    if (!target || !dictPopup.correct) return;
+    const doc = target.ownerDocument ?? document;
+    target.parentNode?.replaceChild(doc.createTextNode(dictPopup.correct), target);
+    dictPopupTargetRef.current = null;
+    setDictPopup((p) => ({ ...p, open: false }));
+    syncStats();
+    scheduleTurkishSpell();
+  }, [dictPopup.correct, scheduleTurkishSpell, syncStats]);
 
   useEffect(() => {
     const onSel = () => {
@@ -1583,6 +1797,25 @@ export default function WordLikeWorkbench({
             {paragraphGapPx}px
           </span>
         </label>
+
+        {mode === "reading" ? (
+          <button
+            type="button"
+            title="Okuma Cetveli"
+            aria-label="Okuma Cetveli"
+            aria-pressed={readingRulerOn}
+            onMouseDown={keepEditorSelection}
+            onClick={() => setReadingRulerOn((v) => !v)}
+            className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-semibold sm:text-sm ${
+              readingRulerOn
+                ? "border-amber-700 bg-amber-100 text-amber-950 hover:bg-amber-200"
+                : "border-stone-500 bg-white text-stone-800 hover:bg-stone-50"
+            }`}
+          >
+            <span aria-hidden>📏</span>
+            <span>Cetvel</span>
+          </button>
+        ) : null}
 
         {mode === "reading" ? (
           <button
@@ -2159,6 +2392,7 @@ export default function WordLikeWorkbench({
                                 aria-label="Kişiselleştirilmiş belge metni"
                                 lang="tr"
                                 spellCheck={false}
+                                onKeyDown={handleEditorEnterKey}
                                 onInput={() => {
                                   syncStats();
                                   refreshFormatState();
@@ -2379,6 +2613,7 @@ export default function WordLikeWorkbench({
                       }
                       lang="tr"
                       spellCheck={false}
+                      onKeyDown={handleEditorEnterKey}
                       onInput={
                         mode === "writing" || !immersiveReading
                           ? () => {
@@ -2523,6 +2758,38 @@ export default function WordLikeWorkbench({
             </Link>
           </div>
         </footer>
+      ) : null}
+      {dictPopup.open && mode === "writing" ? (
+        <div
+          ref={dictPopupRef}
+          data-lexi-dict-popup="1"
+          className="fixed z-[140] -translate-x-1/2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm shadow-lg"
+          style={{ left: `${dictPopup.x}px`, top: `${Math.max(8, dictPopup.y)}px` }}
+        >
+          <button
+            type="button"
+            onClick={replaceDictWord}
+            className="font-semibold text-amber-700 underline underline-offset-2"
+          >
+            {dictPopup.correct}
+          </button>
+          <span className="text-stone-700">?</span>
+        </div>
+      ) : null}
+      {mode === "reading" && readingRulerOn ? (
+        <div
+          aria-hidden
+          style={{
+            position: "fixed",
+            left: 0,
+            top: `${readingRulerTop}px`,
+            width: "100vw",
+            height: `${readingRulerHeight}px`,
+            background: "rgba(255, 255, 0, 0.2)",
+            pointerEvents: "none",
+            zIndex: 120,
+          }}
+        />
       ) : null}
     </div>
   );
