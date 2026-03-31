@@ -16,6 +16,7 @@ export default function KelimeTarayici() {
   const [candidateWords, setCandidateWords] = useState(/** @type {string[]} */ ([]));
   const [pickedWord, setPickedWord] = useState("");
   const [readAs, setReadAs] = useState("");
+  const [showSuccess, setShowSuccess] = useState(false);
 
   useEffect(() => {
     const s = getStorageJSON(STORE_KEY, null);
@@ -122,26 +123,71 @@ export default function KelimeTarayici() {
       const i = prev.findIndex(
         (r) => r.word.toLocaleLowerCase("tr-TR") === pickedWord.toLocaleLowerCase("tr-TR")
       );
-      if (i < 0) {
-        return [
-          ...prev,
-          {
-            word: pickedWord,
-            readAs,
-            count: 1,
-            addedAt: new Date().toISOString(),
-          },
-        ];
+      const nextRows =
+        i < 0
+          ? [
+              ...prev,
+              {
+                word: pickedWord,
+                readAs,
+                count: 1,
+                addedAt: new Date().toISOString(),
+              },
+            ]
+          : prev.map((row, idx) =>
+              idx === i
+                ? {
+                    ...row,
+                    count: (row.count || 1) + 1,
+                    readAs: readAs || row.readAs,
+                  }
+                : row
+            );
+
+      const upp = getUpp();
+      if (upp && typeof upp === "object") {
+        const existing = Array.isArray(upp.wordDictionary) ? upp.wordDictionary : [];
+        const mergedMap = new Map();
+        for (const row of existing) {
+          if (!row || typeof row !== "object" || typeof row.kelime !== "string") continue;
+          const key = row.kelime.toLocaleLowerCase("tr-TR");
+          mergedMap.set(key, {
+            kelime: row.kelime,
+            nasılOkudum: typeof row.nasılOkudum === "string" ? row.nasılOkudum : "",
+            sayi:
+              typeof row.sayi === "number" && Number.isFinite(row.sayi) && row.sayi > 0
+                ? Math.floor(row.sayi)
+                : 1,
+          });
+        }
+        for (const row of nextRows) {
+          const key = row.word.toLocaleLowerCase("tr-TR");
+          const prevRow = mergedMap.get(key);
+          if (!prevRow) {
+            mergedMap.set(key, {
+              kelime: row.word,
+              nasılOkudum: row.readAs || "",
+              sayi: row.count || 1,
+              eklendigiTarih: row.addedAt || new Date().toISOString(),
+            });
+          } else {
+            mergedMap.set(key, {
+              kelime: prevRow.kelime,
+              nasılOkudum: row.readAs || prevRow.nasılOkudum || "",
+              sayi: row.count || 1,
+              eklendigiTarih:
+                (typeof prevRow.eklendigiTarih === "string" && prevRow.eklendigiTarih) ||
+                row.addedAt ||
+                new Date().toISOString(),
+            });
+          }
+        }
+        setUpp({ ...upp, wordDictionary: Array.from(mergedMap.values()) });
+        setShowSuccess(true);
+        window.setTimeout(() => setShowSuccess(false), 1000);
       }
-      return prev.map((row, idx) =>
-        idx === i
-          ? {
-              ...row,
-              count: (row.count || 1) + 1,
-              readAs: readAs || row.readAs,
-            }
-          : row
-      );
+
+      return nextRows;
     });
     setCandidateWords([]);
     setPickedWord("");
@@ -152,49 +198,6 @@ export default function KelimeTarayici() {
     setCandidateWords([]);
     setPickedWord("");
     setReadAs("");
-  }
-
-  function saveProfile() {
-    const upp = getUpp();
-    if (!upp || typeof upp !== "object") return;
-    const existing = Array.isArray(upp.wordDictionary) ? upp.wordDictionary : [];
-    const mergedMap = new Map();
-    for (const row of existing) {
-      if (!row || typeof row !== "object" || typeof row.kelime !== "string") continue;
-      const key = row.kelime.toLocaleLowerCase("tr-TR");
-      mergedMap.set(key, {
-        kelime: row.kelime,
-        nasılOkudum: typeof row.nasılOkudum === "string" ? row.nasılOkudum : "",
-        sayi:
-          typeof row.sayi === "number" && Number.isFinite(row.sayi) && row.sayi > 0
-            ? Math.floor(row.sayi)
-            : 1,
-      });
-    }
-    for (const row of wordRows) {
-      const key = row.word.toLocaleLowerCase("tr-TR");
-      const prev = mergedMap.get(key);
-      if (!prev) {
-        mergedMap.set(key, {
-          kelime: row.word,
-          nasılOkudum: row.readAs || "",
-          sayi: row.count || 1,
-          eklendigiTarih: row.addedAt || new Date().toISOString(),
-        });
-      } else {
-        mergedMap.set(key, {
-          kelime: prev.kelime,
-          nasılOkudum: row.readAs || prev.nasılOkudum || "",
-          sayi: (prev.sayi || 1) + (row.count || 1),
-          eklendigiTarih:
-            (typeof prev.eklendigiTarih === "string" && prev.eklendigiTarih) ||
-            (typeof prev.addedAt === "string" && prev.addedAt) ||
-            row.addedAt ||
-            new Date().toISOString(),
-        });
-      }
-    }
-    setUpp({ ...upp, wordDictionary: Array.from(mergedMap.values()) });
   }
 
   return (
@@ -297,13 +300,11 @@ export default function KelimeTarayici() {
               ))
             )}
           </div>
-          <button
-            type="button"
-            onClick={saveProfile}
-            className="mt-3 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800"
-          >
-            Profile Kaydet
-          </button>
+          {showSuccess ? (
+            <p className="mt-3 text-sm font-semibold text-emerald-700">
+              ✓ Kişisel sözlüğe kaydedildi!
+            </p>
+          ) : null}
         </aside>
       </div>
 
